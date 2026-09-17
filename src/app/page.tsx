@@ -7,6 +7,7 @@ import {
   Eye,
   EyeOff,
   History,
+  LogOut,
   Minus,
   Plus,
   Printer,
@@ -145,6 +146,20 @@ function newRequestId() {
   return `req-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
 }
 
+async function apiFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const res = await fetch(input, init);
+  if (res.status === 401 && typeof window !== "undefined") {
+    // Recarga completa intencional: limpia todo el estado de la sesión.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.href = "/login";
+    throw new Error("Tu sesión venció. Redirigiendo al ingreso…");
+  }
+  return res;
+}
+
 async function readError(response: Response) {
   try {
     const data = (await response.json()) as { error?: string };
@@ -188,6 +203,7 @@ export default function POSPage() {
   const [newCost, setNewCost] = useState("");
   const [savingNew, setSavingNew] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const [authUser, setAuthUser] = useState<string | null>(null);
   const [savingPriceId, setSavingPriceId] = useState<number | null>(null);
   const [priceError, setPriceError] = useState<string | null>(null);
 
@@ -199,7 +215,7 @@ export default function POSPage() {
     setProductsLoading(true);
     setProductsError(null);
     try {
-      const res = await fetch("/api/products", { cache: "no-store" });
+      const res = await apiFetch("/api/products", { cache: "no-store" });
       if (!res.ok) throw new Error(await readError(res));
       const data = (await res.json()) as Product[];
       setProducts(data);
@@ -245,7 +261,7 @@ export default function POSPage() {
     setSalesLoading(true);
     setSalesError(null);
     try {
-      const res = await fetch("/api/sales", { cache: "no-store" });
+      const res = await apiFetch("/api/sales", { cache: "no-store" });
       if (!res.ok) throw new Error(await readError(res));
       setSales((await res.json()) as Sale[]);
     } catch (error) {
@@ -262,6 +278,14 @@ export default function POSPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadProducts();
     loadSales();
+    fetch("/api/me", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { user?: string | null } | null) => {
+        if (data?.user) setAuthUser(data.user);
+      })
+      .catch(() => {
+        // sin sesión o sin login configurado: no se muestra el botón Salir
+      });
   }, []);
 
   useEffect(() => {
@@ -418,7 +442,7 @@ export default function POSPage() {
     setSubmitting(true);
     setCheckoutError(null);
     try {
-      const res = await fetch("/api/sales", {
+      const res = await apiFetch("/api/sales", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -479,7 +503,7 @@ export default function POSPage() {
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
       if (presRaw !== "") body.presentation = presRaw;
-      const res = await fetch("/api/products", {
+      const res = await apiFetch("/api/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -501,7 +525,7 @@ export default function POSPage() {
     setSavingPriceId(id);
     setPriceError(null);
     try {
-      const res = await fetch("/api/products", {
+      const res = await apiFetch("/api/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, active: next }),
@@ -546,7 +570,7 @@ export default function POSPage() {
       if (pres !== "") body.presentation = pres;
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
-      const res = await fetch("/api/products", {
+      const res = await apiFetch("/api/products", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -584,6 +608,16 @@ export default function POSPage() {
       );
     } finally {
       setSavingNew(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await fetch("/api/logout", { method: "POST" });
+    } finally {
+      // Recarga completa intencional: limpia todo el estado de la sesión.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.href = "/login";
     }
   }
 
@@ -832,6 +866,21 @@ export default function POSPage() {
             <span className="rounded-full bg-stone-100 px-3 py-1.5 font-semibold text-stone-700">
               {activeCount} productos · {pricedCount} con precio
             </span>
+            {authUser && (
+              <>
+                <span className="rounded-full bg-red-50 px-3 py-1.5 font-semibold text-red-900">
+                  {authUser}
+                </span>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="flex items-center gap-1.5 rounded-full bg-stone-900 px-3 py-1.5 font-semibold text-white hover:bg-stone-700"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  Salir
+                </button>
+              </>
+            )}
           </div>
         </div>
       </header>
