@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+:root {
+  --background: #faf6ef;
+  --foreground: #292019;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+dialog::backdrop {
+  background: rgb(41 32 25 / 0.55);
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.bottle {
+  position: relative;
+  width: 30px;
+  height: 74px;
+  flex-shrink: 0;
+}
+.bottle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 20px;
+  border-radius: 3px 3px 0 0;
+  background: var(--bottle, #57534e);
+  filter: brightness(0.72);
+}
+.bottle::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 12px;
+  height: 6px;
+  border-radius: 2px;
+  background: #92400e;
+}
+.bottle-body {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  top: 16px;
+  border-radius: 7px 7px 9px 9px;
+  background: var(--bottle, #57534e);
+  overflow: hidden;
+}
+.bottle-body::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 5px;
+  width: 5px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.35);
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .ticket-print,
+  .ticket-print * {
+    visibility: visible;
+  }
+  .ticket-print {
+    position: fixed;
+    inset: 0 auto auto 0;
+    width: 100%;
+    max-height: none;
+    border: none;
+    box-shadow: none;
+    margin: 0;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
