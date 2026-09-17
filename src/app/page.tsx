@@ -554,7 +554,7 @@ export default function POSPage() {
             </span>
             <div>
               <h1 className="text-xl font-extrabold tracking-tight text-stone-900">
-                La Cava
+                El Arbolito
               </h1>
               <p className="text-xs text-stone-500">
                 Punto de venta · Distribuidor independiente
@@ -1094,7 +1094,7 @@ export default function POSPage() {
                 <Wine className="h-7 w-7" />
               </span>
               <h2 className="mt-2 text-xl font-extrabold text-stone-900">
-                La Cava
+                El Arbolito
               </h2>
               <p className="text-xs text-stone-500">Distribuidor independiente</p>
               <p className="mt-2 inline-block rounded-full bg-amber-100 px-3 py-1 text-[11px] font-bold text-amber-900">

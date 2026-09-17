@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "La Cava · Punto de venta",
+  title: "El Arbolito · Punto de venta",
   description:
     "Punto de venta para distribuidor independiente de vinos y piscos Hacienda del Abuelo.",
 };
