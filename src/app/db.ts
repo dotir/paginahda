@@ -7,6 +7,7 @@ export type Product = {
   category: string;
   priceCents: number | null;
   costCents: number | null;
+  active: number;
 };
 
 export type SaleItem = {
@@ -84,7 +85,8 @@ function ensureSchema(): Promise<void> {
             name TEXT NOT NULL UNIQUE,
             category TEXT NOT NULL,
             price_cents INTEGER CHECK (price_cents IS NULL OR price_cents > 0),
-            cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents > 0)
+            cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents > 0),
+            active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
           )`,
           `CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +118,7 @@ function ensureSchema(): Promise<void> {
       for (const sql of [
         "ALTER TABLE products ADD COLUMN cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents > 0)",
         "ALTER TABLE sale_items ADD COLUMN unit_cost_cents INTEGER CHECK (unit_cost_cents IS NULL OR unit_cost_cents > 0)",
+        "ALTER TABLE products ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))",
       ]) {
         try {
           await client.execute(sql);
@@ -143,6 +146,7 @@ function toProduct(row: Row): Product {
     category: String(row.category),
     priceCents: nullableNum(row.priceCents),
     costCents: nullableNum(row.costCents),
+    active: num(row.active),
   };
 }
 
@@ -227,34 +231,65 @@ async function loadSale(db: Executor, saleId: number): Promise<Sale> {
 export async function getProducts(): Promise<Product[]> {
   await ensureSchema();
   const rs = await getClient().execute(
-    "SELECT id, name, category, price_cents AS priceCents, cost_cents AS costCents FROM products ORDER BY id",
+    "SELECT id, name, category, price_cents AS priceCents, cost_cents AS costCents, active FROM products ORDER BY id",
   );
   return rs.rows.map(toProduct);
 }
 
+function checkMoney(label: string, value: number | null | undefined) {
+  if (value === undefined || value === null) return;
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ValidationError(`El ${label} debe ser mayor a S/ 0.00.`);
+  }
+  if (value > 100_000_000) {
+    throw new ValidationError(`El ${label} supera el máximo permitido.`);
+  }
+}
+
+export async function createProduct(input: {
+  name: string;
+  category: string;
+  priceCents?: number | null;
+  costCents?: number | null;
+}): Promise<Product[]> {
+  const name = input.name.trim();
+  const category = input.category.trim();
+  if (name.length === 0 || name.length > 120) {
+    throw new ValidationError("El nombre debe tener entre 1 y 120 caracteres.");
+  }
+  if (category.length === 0 || category.length > 60) {
+    throw new ValidationError("La categoría debe tener entre 1 y 60 caracteres.");
+  }
+  checkMoney("precio", input.priceCents);
+  checkMoney("costo", input.costCents);
+  await ensureSchema();
+  try {
+    await getClient().execute({
+      sql: "INSERT INTO products (name, category, price_cents, cost_cents) VALUES (?, ?, ?, ?)",
+      args: [name, category, input.priceCents ?? null, input.costCents ?? null],
+    });
+  } catch (error) {
+    if (/unique constraint/i.test(String(error))) {
+      throw new ValidationError(`Ya existe un producto llamado "${name}".`);
+    }
+    throw error;
+  }
+  return getProducts();
+}
+
 export async function updateProduct(
   id: number,
-  patch: { priceCents?: number | null; costCents?: number | null },
+  patch: { priceCents?: number | null; costCents?: number | null; active?: boolean },
 ): Promise<Product[]> {
   if (!Number.isInteger(id) || id <= 0) {
     throw new ValidationError("Producto inválido.");
   }
-  const { priceCents, costCents } = patch;
-  if (priceCents === undefined && costCents === undefined) {
+  const { priceCents, costCents, active } = patch;
+  if (priceCents === undefined && costCents === undefined && active === undefined) {
     throw new ValidationError("Nada que actualizar.");
   }
-  for (const [label, value] of [
-    ["precio", priceCents],
-    ["costo", costCents],
-  ] as const) {
-    if (value === undefined || value === null) continue;
-    if (!Number.isInteger(value) || value <= 0) {
-      throw new ValidationError(`El ${label} debe ser mayor a S/ 0.00.`);
-    }
-    if (value > 100_000_000) {
-      throw new ValidationError(`El ${label} supera el máximo permitido.`);
-    }
-  }
+  checkMoney("precio", priceCents);
+  checkMoney("costo", costCents);
   await ensureSchema();
   const sets: string[] = [];
   const args: Array<number | null> = [];
@@ -265,6 +300,10 @@ export async function updateProduct(
   if (costCents !== undefined) {
     sets.push("cost_cents = ?");
     args.push(costCents);
+  }
+  if (active !== undefined) {
+    sets.push("active = ?");
+    args.push(active ? 1 : 0);
   }
   args.push(id);
   const result = await getClient().execute({
@@ -347,7 +386,7 @@ export async function createSale(input: {
     let total = 0;
     for (const item of items) {
       const found = await tx.execute({
-        sql: "SELECT id, name, price_cents AS priceCents, cost_cents AS costCents FROM products WHERE id = ?",
+        sql: "SELECT id, name, price_cents AS priceCents, cost_cents AS costCents, active FROM products WHERE id = ?",
         args: [item.productId],
       });
       if (found.rows.length === 0) {
@@ -358,7 +397,11 @@ export async function createSale(input: {
         name: String(found.rows[0].name),
         priceCents: nullableNum(found.rows[0].priceCents),
         costCents: nullableNum(found.rows[0].costCents),
+        active: num(found.rows[0].active),
       };
+      if (product.active !== 1) {
+        throw new ValidationError(`"${product.name}" está desactivado.`);
+      }
       if (product.priceCents === null) {
         throw new ValidationError(`"${product.name}" aún no tiene precio de venta.`);
       }

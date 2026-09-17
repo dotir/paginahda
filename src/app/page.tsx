@@ -5,6 +5,8 @@ import {
   Banknote,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   History,
   Landmark,
   Minus,
@@ -29,6 +31,7 @@ type Product = {
   category: string;
   priceCents: number | null;
   costCents: number | null;
+  active: number;
 };
 
 type SaleItem = {
@@ -176,6 +179,13 @@ export default function POSPage() {
 
   const [priceDrafts, setPriceDrafts] = useState<Record<number, string>>({});
   const [costDrafts, setCostDrafts] = useState<Record<number, string>>({});
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newCategory, setNewCategory] = useState("");
+  const [newPrice, setNewPrice] = useState("");
+  const [newCost, setNewCost] = useState("");
+  const [savingNew, setSavingNew] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
   const [savingPriceId, setSavingPriceId] = useState<number | null>(null);
   const [priceError, setPriceError] = useState<string | null>(null);
 
@@ -258,14 +268,27 @@ export default function POSPage() {
     return ["Todas", ...Array.from(set)];
   }, [products]);
 
+  const activeCategories = useMemo(() => {
+    const set = new Set(
+      products.filter((p) => p.active === 1).map((p) => p.category),
+    );
+    return ["Todas", ...Array.from(set)];
+  }, [products]);
+
+  const activeCount = useMemo(
+    () => products.filter((p) => p.active === 1).length,
+    [products],
+  );
+
   const pricedCount = useMemo(
-    () => products.filter((p) => p.priceCents !== null).length,
+    () => products.filter((p) => p.active === 1 && p.priceCents !== null).length,
     [products],
   );
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     return products.filter((p) => {
+      if (p.active !== 1) return false;
       if (category !== "Todas" && p.category !== category) return false;
       if (term && !`${p.name} ${p.category}`.toLowerCase().includes(term)) {
         return false;
@@ -284,7 +307,8 @@ export default function POSPage() {
     const lines: Array<{ product: Product; qty: number; lineTotal: number }> = [];
     for (const [key, qty] of Object.entries(cart)) {
       const product = productById.get(Number(key));
-      if (!product || product.priceCents === null || qty <= 0) continue;
+      if (!product || product.active !== 1) continue;
+      if (product.priceCents === null || qty <= 0) continue;
       lines.push({ product, qty, lineTotal: product.priceCents * qty });
     }
     return lines.sort((a, b) => a.product.name.localeCompare(b.product.name));
@@ -450,6 +474,85 @@ export default function POSPage() {
       );
     } finally {
       setSavingPriceId(null);
+    }
+  }
+
+  async function toggleActive(id: number, next: boolean) {
+    setSavingPriceId(id);
+    setPriceError(null);
+    try {
+      const res = await fetch("/api/products", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, active: next }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      setProducts((await res.json()) as Product[]);
+      setConnected(true);
+    } catch (error) {
+      setPriceError(
+        error instanceof Error ? error.message : "No se pudo actualizar.",
+      );
+    } finally {
+      setSavingPriceId(null);
+    }
+  }
+
+  async function submitNewProduct() {
+    const name = newName.trim();
+    const cat = newCategory.trim();
+    if (name === "" || cat === "") {
+      setAddError("Ponle nombre y categoría al producto.");
+      return;
+    }
+    const price = newPrice.trim() === "" ? undefined : parseSolesToCents(newPrice.trim());
+    const cost = newCost.trim() === "" ? undefined : parseSolesToCents(newCost.trim());
+    if (price === null || cost === null) {
+      setAddError("Revisa los montos: deben ser mayores a S/ 0.00.");
+      return;
+    }
+    setSavingNew(true);
+    setAddError(null);
+    try {
+      const body: { name: string; category: string; priceCents?: number; costCents?: number } = {
+        name,
+        category: cat,
+      };
+      if (price !== undefined) body.priceCents = price;
+      if (cost !== undefined) body.costCents = cost;
+      const res = await fetch("/api/products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const data = (await res.json()) as Product[];
+      setProducts(data);
+      const created = data.find((p) => p.name === name);
+      if (created) {
+        setPriceDrafts((prev) => ({
+          ...prev,
+          [created.id]:
+            created.priceCents === null ? "" : (created.priceCents / 100).toFixed(2),
+        }));
+        setCostDrafts((prev) => ({
+          ...prev,
+          [created.id]:
+            created.costCents === null ? "" : (created.costCents / 100).toFixed(2),
+        }));
+      }
+      setNewName("");
+      setNewCategory("");
+      setNewPrice("");
+      setNewCost("");
+      setShowAddForm(false);
+      setConnected(true);
+    } catch (error) {
+      setAddError(
+        error instanceof Error ? error.message : "No se pudo agregar.",
+      );
+    } finally {
+      setSavingNew(false);
     }
   }
 
@@ -695,7 +798,7 @@ export default function POSPage() {
               {connected === false ? "Sin conexión" : "En línea"}
             </span>
             <span className="rounded-full bg-stone-100 px-3 py-1.5 font-semibold text-stone-700">
-              {products.length} productos · {pricedCount} con precio
+              {activeCount} productos · {pricedCount} con precio
             </span>
           </div>
         </div>
@@ -750,7 +853,7 @@ export default function POSPage() {
                     role="group"
                     aria-label="Filtrar por categoría"
                   >
-                    {categories.map((c) => (
+                    {activeCategories.map((c) => (
                       <button
                         key={c}
                         type="button"
@@ -924,10 +1027,111 @@ export default function POSPage() {
                 </h2>
                 <p className="mt-1 text-sm text-stone-500">
                   Anota a cuánto te cuesta cada producto y a cuánto lo vendes.
-                  Solo los productos con precio aparecen habilitados para la
-                  venta.
+                  Solo los productos activos y con precio aparecen habilitados
+                  para la venta.
                 </p>
               </div>
+
+              {!showAddForm ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddForm(true);
+                    setAddError(null);
+                  }}
+                  className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-red-900 py-3 text-sm font-bold text-white hover:bg-red-950"
+                >
+                  <Plus className="h-4 w-4" />
+                  Agregar producto
+                </button>
+              ) : (
+                <div className="mt-3 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+                  <h3 className="text-sm font-extrabold text-stone-900">
+                    Nuevo producto
+                  </h3>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1 text-xs font-bold text-stone-500">
+                      Nombre
+                      <input
+                        type="text"
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        placeholder="Ej. Vino Tinto Reserva"
+                        maxLength={120}
+                        className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-normal text-stone-900 outline-none placeholder:text-stone-400 focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-bold text-stone-500">
+                      Categoría
+                      <input
+                        type="text"
+                        value={newCategory}
+                        onChange={(e) => setNewCategory(e.target.value)}
+                        placeholder="Ej. Semisecos"
+                        maxLength={60}
+                        list="existing-categories"
+                        className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-normal text-stone-900 outline-none placeholder:text-stone-400 focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                      />
+                      <datalist id="existing-categories">
+                        {categories
+                          .filter((c) => c !== "Todas")
+                          .map((c) => (
+                            <option key={c} value={c} />
+                          ))}
+                      </datalist>
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-bold text-stone-500">
+                      Me cuesta S/ (opcional)
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        inputMode="decimal"
+                        value={newCost}
+                        onChange={(e) => setNewCost(e.target.value)}
+                        placeholder="0.00"
+                        className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-bold text-stone-900 outline-none focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-bold text-stone-500">
+                      Lo vendo S/ (opcional)
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        inputMode="decimal"
+                        value={newPrice}
+                        onChange={(e) => setNewPrice(e.target.value)}
+                        placeholder="0.00"
+                        className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-bold text-stone-900 outline-none focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                      />
+                    </label>
+                  </div>
+                  {addError && (
+                    <p className="mt-2 rounded-lg bg-red-50 p-2 text-center text-sm font-bold text-red-800" role="alert">
+                      {addError}
+                    </p>
+                  )}
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddForm(false)}
+                      disabled={savingNew}
+                      className="rounded-xl border border-stone-300 py-2.5 text-sm font-bold text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={submitNewProduct}
+                      disabled={savingNew}
+                      className="rounded-xl bg-red-900 py-2.5 text-sm font-bold text-white hover:bg-red-950 disabled:opacity-50"
+                    >
+                      {savingNew ? "Guardando…" : "Guardar producto"}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {priceError && (
                 <div
@@ -979,7 +1183,11 @@ export default function POSPage() {
                     return (
                       <li
                         key={p.id}
-                        className="flex flex-col gap-3 rounded-xl border border-stone-200 bg-white p-3 shadow-sm"
+                        className={`flex flex-col gap-3 rounded-xl border bg-white p-3 shadow-sm ${
+                          p.active === 1
+                            ? "border-stone-200"
+                            : "border-dashed border-stone-300 opacity-70"
+                        }`}
                       >
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                           <div className="min-w-0 flex-1">
@@ -991,6 +1199,11 @@ export default function POSPage() {
                             >
                               {p.category}
                             </span>
+                            {p.active !== 1 && (
+                              <span className="ml-1 mt-1 inline-block rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-stone-600">
+                                Desactivado
+                              </span>
+                            )}
                           </div>
                           <div className="grid grid-cols-2 items-center gap-2">
                             <label className="relative">
@@ -1042,14 +1255,35 @@ export default function POSPage() {
                               />
                             </label>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => saveProduct(p.id)}
-                            disabled={savingPriceId === p.id}
-                            className="rounded-xl bg-red-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-950 disabled:opacity-50 sm:w-28"
-                          >
-                            {savingPriceId === p.id ? "…" : "Guardar"}
-                          </button>
+                          <div className="flex gap-2 sm:w-auto sm:flex-col">
+                            <button
+                              type="button"
+                              onClick={() => saveProduct(p.id)}
+                              disabled={savingPriceId === p.id}
+                              className="flex-1 rounded-xl bg-red-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-950 disabled:opacity-50 sm:w-28"
+                            >
+                              {savingPriceId === p.id ? "…" : "Guardar"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleActive(p.id, p.active !== 1)}
+                              disabled={savingPriceId === p.id}
+                              title={p.active === 1 ? "Desactivar producto" : "Reactivar producto"}
+                              aria-label={`${p.active === 1 ? "Desactivar" : "Reactivar"} ${p.name}`}
+                              className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl border px-3 py-2.5 text-xs font-bold disabled:opacity-50 sm:w-28 ${
+                                p.active === 1
+                                  ? "border-stone-300 text-stone-500 hover:border-red-900 hover:text-red-900"
+                                  : "border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+                              }`}
+                            >
+                              {p.active === 1 ? (
+                                <EyeOff className="h-4 w-4" />
+                              ) : (
+                                <Eye className="h-4 w-4" />
+                              )}
+                              {p.active === 1 ? "Ocultar" : "Mostrar"}
+                            </button>
+                          </div>
                         </div>
                         {margin !== null && (
                           <p
