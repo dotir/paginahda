@@ -34,3 +34,8 @@ pestaña **Catálogo** → registra tus precios de reventa en soles.
 - Métodos de pago: efectivo, tarjeta, yape y cheque. Efectivo y cheque
   registran monto recibido y vuelto (calculado en el servidor).
 - Las ventas son idempotentes por `requestId`: reintentar no duplica.
+- En **Catálogo** anota el costo (a cuánto te lo dan) y el precio (a cuánto
+  lo vendes); la ganancia se calcula sola y cada venta guarda el costo del
+  momento.
+- En **Historial** ves la ganancia del día y puedes descargar el reporte
+  diario en CSV (abre en Excel).

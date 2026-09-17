@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
-import { ValidationError, getProducts, updateProductPrice } from "@/app/db";
+import { ValidationError, getProducts, updateProduct } from "@/app/db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   return NextResponse.json(await getProducts());
+}
+
+function optionalCents(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return typeof value === "number" ? value : NaN;
 }
 
 export async function PATCH(request: Request) {
@@ -14,12 +20,16 @@ export async function PATCH(request: Request) {
   } catch {
     return NextResponse.json({ error: "Cuerpo JSON inválido." }, { status: 400 });
   }
-  const { id, priceCents } = body as { id?: unknown; priceCents?: unknown };
+  const { id, priceCents, costCents } = body as {
+    id?: unknown;
+    priceCents?: unknown;
+    costCents?: unknown;
+  };
   try {
-    const products = await updateProductPrice(
-      typeof id === "number" ? id : NaN,
-      typeof priceCents === "number" ? priceCents : NaN,
-    );
+    const products = await updateProduct(typeof id === "number" ? id : NaN, {
+      priceCents: optionalCents(priceCents),
+      costCents: optionalCents(costCents),
+    });
     return NextResponse.json(products);
   } catch (error) {
     if (error instanceof ValidationError) {

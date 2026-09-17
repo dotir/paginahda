@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Banknote,
   CreditCard,
+  Download,
   History,
   Landmark,
   Minus,
@@ -27,6 +28,7 @@ type Product = {
   name: string;
   category: string;
   priceCents: number | null;
+  costCents: number | null;
 };
 
 type SaleItem = {
@@ -34,6 +36,7 @@ type SaleItem = {
   name: string;
   quantity: number;
   unitPriceCents: number;
+  unitCostCents: number | null;
   totalCents: number;
 };
 
@@ -114,6 +117,24 @@ function formatDate(iso: string) {
   });
 }
 
+function lineProfit(item: SaleItem): number | null {
+  if (item.unitCostCents === null) return null;
+  return (item.unitPriceCents - item.unitCostCents) * item.quantity;
+}
+
+function saleProfit(sale: Sale): number | null {
+  let total = 0;
+  let known = false;
+  for (const item of sale.items) {
+    const profit = lineProfit(item);
+    if (profit !== null) {
+      total += profit;
+      known = true;
+    }
+  }
+  return known ? total : null;
+}
+
 function newRequestId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -154,6 +175,7 @@ export default function POSPage() {
   const [ticket, setTicket] = useState<Sale | null>(null);
 
   const [priceDrafts, setPriceDrafts] = useState<Record<number, string>>({});
+  const [costDrafts, setCostDrafts] = useState<Record<number, string>>({});
   const [savingPriceId, setSavingPriceId] = useState<number | null>(null);
   const [priceError, setPriceError] = useState<string | null>(null);
 
@@ -175,6 +197,15 @@ export default function POSPage() {
         for (const p of data) {
           if (!(p.id in next)) {
             next[p.id] = p.priceCents === null ? "" : (p.priceCents / 100).toFixed(2);
+          }
+        }
+        return next;
+      });
+      setCostDrafts((prev) => {
+        const next = { ...prev };
+        for (const p of data) {
+          if (!(p.id in next)) {
+            next[p.id] = p.costCents === null ? "" : (p.costCents / 100).toFixed(2);
           }
         }
         return next;
@@ -385,19 +416,29 @@ export default function POSPage() {
     setCheckoutOpen(true);
   }
 
-  async function savePrice(id: number) {
-    const cents = parseSolesToCents(priceDrafts[id] ?? "");
-    if (cents === null) {
-      setPriceError("Ingresa un precio válido mayor a S/ 0.00 (ej. 45.50).");
+  async function saveProduct(id: number) {
+    const priceRaw = (priceDrafts[id] ?? "").trim();
+    const costRaw = (costDrafts[id] ?? "").trim();
+    if (priceRaw === "" && costRaw === "") {
+      setPriceError("Ingresa al menos el costo o el precio de venta.");
+      return;
+    }
+    const price = priceRaw === "" ? undefined : parseSolesToCents(priceRaw);
+    const cost = costRaw === "" ? undefined : parseSolesToCents(costRaw);
+    if (price === null || cost === null) {
+      setPriceError("Revisa los montos: deben ser mayores a S/ 0.00 (ej. 15.00).");
       return;
     }
     setSavingPriceId(id);
     setPriceError(null);
     try {
+      const body: { id: number; priceCents?: number; costCents?: number } = { id };
+      if (price !== undefined) body.priceCents = price;
+      if (cost !== undefined) body.costCents = cost;
       const res = await fetch("/api/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, priceCents: cents }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(await readError(res));
       const data = (await res.json()) as Product[];
@@ -405,7 +446,7 @@ export default function POSPage() {
       setConnected(true);
     } catch (error) {
       setPriceError(
-        error instanceof Error ? error.message : "No se pudo guardar el precio.",
+        error instanceof Error ? error.message : "No se pudo guardar.",
       );
     } finally {
       setSavingPriceId(null);
@@ -421,6 +462,82 @@ export default function POSPage() {
 
   function paymentLabel(value: string) {
     return PAYMENT_OPTIONS.find((o) => o.value === value)?.label ?? value;
+  }
+
+  const todayProfit = useMemo(() => {
+    let total = 0;
+    let known = false;
+    for (const sale of todaySales) {
+      const profit = saleProfit(sale);
+      if (profit !== null) {
+        total += profit;
+        known = true;
+      }
+    }
+    return known ? total : null;
+  }, [todaySales]);
+
+  function downloadDailyReport() {
+    if (todaySales.length === 0) return;
+    const dec = (cents: number) => (cents / 100).toFixed(2).replace(".", ",");
+    const rows: string[] = [
+      "Venta;Fecha;Hora;Método de pago;Producto;Cantidad;Precio unit. (S/);Subtotal (S/);Costo unit. (S/);Ganancia (S/)",
+    ];
+    const ordered = [...todaySales].sort((a, b) => a.id - b.id);
+    let dayTotal = 0;
+    let dayProfit = 0;
+    let profitKnown = false;
+    for (const sale of ordered) {
+      const date = new Date(sale.createdAt);
+      const fecha = date.toLocaleDateString("es-PE");
+      const hora = date.toLocaleTimeString("es-PE", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      dayTotal += sale.totalCents;
+      for (const item of sale.items) {
+        const profit = lineProfit(item);
+        if (profit !== null) {
+          dayProfit += profit;
+          profitKnown = true;
+        }
+        rows.push(
+          [
+            sale.id,
+            fecha,
+            hora,
+            paymentLabel(sale.paymentMethod),
+            `"${item.name.replace(/"/g, '""')}"`,
+            item.quantity,
+            dec(item.unitPriceCents),
+            dec(item.totalCents),
+            item.unitCostCents === null ? "—" : dec(item.unitCostCents),
+            profit === null ? "—" : dec(profit),
+          ].join(";"),
+        );
+      }
+    }
+    rows.push("");
+    rows.push(`RESUMEN DEL DÍA ${todayKey};Ventas: ${ordered.length}`);
+    rows.push(`Total vendido (S/);${dec(dayTotal)}`);
+    rows.push(
+      `Ganancia (S/);${profitKnown ? dec(dayProfit) : "— (registra los costos en Catálogo)"}`,
+    );
+    const blob = new Blob(["\uFEFF" + rows.join("\r\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    const now = new Date();
+    const stamp = [now.getFullYear(), now.getMonth() + 1, now.getDate()]
+      .map((n) => String(n).padStart(2, "0"))
+      .join("-");
+    link.download = `reporte-ventas-${stamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   const navItems: Array<{ value: View; label: string; icon: React.ReactNode }> = [
@@ -803,11 +920,12 @@ export default function POSPage() {
               <div className="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5">
                 <h2 className="flex items-center gap-2 text-lg font-extrabold text-stone-900">
                   <Store className="h-5 w-5 text-red-900" />
-                  Catálogo y precios
+                  Catálogo, costos y precios
                 </h2>
                 <p className="mt-1 text-sm text-stone-500">
-                  Registra tus precios de reventa en soles. Solo los productos
-                  con precio aparecen habilitados para la venta.
+                  Anota a cuánto te cuesta cada producto y a cuánto lo vendes.
+                  Solo los productos con precio aparecen habilitados para la
+                  venta.
                 </p>
               </div>
 
@@ -848,55 +966,100 @@ export default function POSPage() {
                 <ul className="mt-3 flex flex-col gap-2">
                   {products.map((p) => {
                     const style = categoryStyle(p.category);
+                    const priceText = (priceDrafts[p.id] ?? "").trim();
+                    const costText = (costDrafts[p.id] ?? "").trim();
+                    const draftPrice =
+                      priceText === "" ? null : parseSolesToCents(priceText);
+                    const draftCost =
+                      costText === "" ? null : parseSolesToCents(costText);
+                    const margin =
+                      draftPrice !== null && draftCost !== null
+                        ? draftPrice - draftCost
+                        : null;
                     return (
                       <li
                         key={p.id}
-                        className="flex flex-col gap-3 rounded-xl border border-stone-200 bg-white p-3 shadow-sm sm:flex-row sm:items-center"
+                        className="flex flex-col gap-3 rounded-xl border border-stone-200 bg-white p-3 shadow-sm"
                       >
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-bold text-stone-900">
-                            {p.name}
-                          </p>
-                          <span
-                            className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-bold ${style.badge}`}
-                          >
-                            {p.category}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <label className="relative">
-                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-stone-400">
-                              S/
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-bold text-stone-900">
+                              {p.name}
+                            </p>
+                            <span
+                              className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-bold ${style.badge}`}
+                            >
+                              {p.category}
                             </span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              inputMode="decimal"
-                              value={priceDrafts[p.id] ?? ""}
-                              onChange={(e) =>
-                                setPriceDrafts((prev) => ({
-                                  ...prev,
-                                  [p.id]: e.target.value,
-                                }))
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") savePrice(p.id);
-                              }}
-                              placeholder="0.00"
-                              aria-label={`Precio de ${p.name} en soles`}
-                              className="w-32 rounded-xl border border-stone-300 py-2.5 pl-9 pr-3 text-sm font-bold outline-none focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
-                            />
-                          </label>
+                          </div>
+                          <div className="grid grid-cols-2 items-center gap-2">
+                            <label className="relative">
+                              <span className="pointer-events-none absolute -top-2 left-3 rounded bg-white px-1 text-[10px] font-bold uppercase tracking-wide text-stone-400">
+                                Me cuesta S/
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                value={costDrafts[p.id] ?? ""}
+                                onChange={(e) =>
+                                  setCostDrafts((prev) => ({
+                                    ...prev,
+                                    [p.id]: e.target.value,
+                                  }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") saveProduct(p.id);
+                                }}
+                                placeholder="0.00"
+                                aria-label={`Costo de ${p.name} en soles`}
+                                className="w-full rounded-xl border border-stone-300 py-2.5 pl-3 pr-3 text-sm font-bold outline-none focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                              />
+                            </label>
+                            <label className="relative">
+                              <span className="pointer-events-none absolute -top-2 left-3 rounded bg-white px-1 text-[10px] font-bold uppercase tracking-wide text-stone-400">
+                                Lo vendo S/
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                value={priceDrafts[p.id] ?? ""}
+                                onChange={(e) =>
+                                  setPriceDrafts((prev) => ({
+                                    ...prev,
+                                    [p.id]: e.target.value,
+                                  }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") saveProduct(p.id);
+                                }}
+                                placeholder="0.00"
+                                aria-label={`Precio de ${p.name} en soles`}
+                                className="w-full rounded-xl border border-stone-300 py-2.5 pl-3 pr-3 text-sm font-bold outline-none focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                              />
+                            </label>
+                          </div>
                           <button
                             type="button"
-                            onClick={() => savePrice(p.id)}
+                            onClick={() => saveProduct(p.id)}
                             disabled={savingPriceId === p.id}
-                            className="rounded-xl bg-red-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-950 disabled:opacity-50"
+                            className="rounded-xl bg-red-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-950 disabled:opacity-50 sm:w-28"
                           >
                             {savingPriceId === p.id ? "…" : "Guardar"}
                           </button>
                         </div>
+                        {margin !== null && (
+                          <p
+                            className={`text-xs font-bold ${margin >= 0 ? "text-emerald-700" : "text-red-700"}`}
+                          >
+                            {margin >= 0
+                              ? `Ganas ${formatPEN(margin)} por unidad`
+                              : `Pierdes ${formatPEN(-margin)} por unidad`}
+                          </p>
+                        )}
                       </li>
                     );
                   })}
@@ -907,7 +1070,7 @@ export default function POSPage() {
 
           {view === "historial" && (
             <section aria-label="Historial de ventas">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 <div className="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
                   <p className="text-xs font-bold uppercase tracking-wide text-stone-500">
                     Ventas de hoy
@@ -924,7 +1087,30 @@ export default function POSPage() {
                     {formatPEN(todayTotal)}
                   </p>
                 </div>
+                <div className="col-span-2 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm sm:col-span-1">
+                  <p className="text-xs font-bold uppercase tracking-wide text-stone-500">
+                    Ganancia de hoy
+                  </p>
+                  <p className="mt-1 text-2xl font-extrabold text-emerald-700">
+                    {todayProfit === null ? "—" : formatPEN(todayProfit)}
+                  </p>
+                  {todayProfit === null && todaySales.length > 0 && (
+                    <p className="mt-1 text-[11px] text-stone-500">
+                      Registra los costos en Catálogo para verla.
+                    </p>
+                  )}
+                </div>
               </div>
+
+              <button
+                type="button"
+                onClick={downloadDailyReport}
+                disabled={todaySales.length === 0}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border-2 border-red-900 bg-white py-3 text-sm font-bold text-red-900 hover:bg-red-50 disabled:cursor-not-allowed disabled:border-stone-200 disabled:text-stone-400 disabled:hover:bg-white"
+              >
+                <Download className="h-4 w-4" />
+                Descargar reporte del día (CSV)
+              </button>
 
               {salesError && (
                 <div
@@ -977,6 +1163,14 @@ export default function POSPage() {
                           {paymentIcon(sale.paymentMethod)}
                           {paymentLabel(sale.paymentMethod)}
                         </span>
+                        {saleProfit(sale) !== null && (
+                          <span
+                            className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-900"
+                            title="Ganancia de esta venta"
+                          >
+                            +{formatPEN(saleProfit(sale) ?? 0)}
+                          </span>
+                        )}
                         <span className="ml-auto text-base font-extrabold text-red-900">
                           {formatPEN(sale.totalCents)}
                         </span>
