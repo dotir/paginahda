@@ -3,12 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Banknote,
-  CreditCard,
   Download,
   Eye,
   EyeOff,
   History,
-  Landmark,
   Minus,
   Plus,
   Printer,
@@ -29,6 +27,7 @@ type Product = {
   id: number;
   name: string;
   category: string;
+  presentation: string | null;
   priceCents: number | null;
   costCents: number | null;
   active: number;
@@ -37,6 +36,7 @@ type Product = {
 type SaleItem = {
   productId: number;
   name: string;
+  presentation: string | null;
   quantity: number;
   unitPriceCents: number;
   unitCostCents: number | null;
@@ -54,18 +54,15 @@ type Sale = {
 };
 
 type View = "ventas" | "catalogo" | "historial";
-type PaymentMethod = "efectivo" | "tarjeta" | "yape" | "cheque";
+type PaymentMethod = "efectivo" | "yape";
 
 const PAYMENT_OPTIONS: Array<{ value: PaymentMethod; label: string }> = [
   { value: "efectivo", label: "Efectivo" },
-  { value: "tarjeta", label: "Tarjeta" },
   { value: "yape", label: "Yape" },
-  { value: "cheque", label: "Cheque" },
 ];
 
 const CHANGE_METHODS: ReadonlySet<PaymentMethod> = new Set([
   "efectivo",
-  "cheque",
 ]);
 
 const CATEGORY_STYLES: Record<string, { badge: string; bottle: string }> = {
@@ -125,8 +122,11 @@ function lineProfit(item: SaleItem): number | null {
   return (item.unitPriceCents - item.unitCostCents) * item.quantity;
 }
 
-function saleProfit(sale: Sale): number | null {
-  let total = 0;
+function displayName(item: { name: string; presentation: string | null }) {
+  return item.presentation ? `${item.name} (${item.presentation})` : item.name;
+}
+
+function saleProfit(sale: Sale): number | null {  let total = 0;
   let known = false;
   for (const item of sale.items) {
     const profit = lineProfit(item);
@@ -179,9 +179,11 @@ export default function POSPage() {
 
   const [priceDrafts, setPriceDrafts] = useState<Record<number, string>>({});
   const [costDrafts, setCostDrafts] = useState<Record<number, string>>({});
+  const [presentationDrafts, setPresentationDrafts] = useState<Record<number, string>>({});
   const [showAddForm, setShowAddForm] = useState(false);
   const [newName, setNewName] = useState("");
   const [newCategory, setNewCategory] = useState("");
+  const [newPresentation, setNewPresentation] = useState("");
   const [newPrice, setNewPrice] = useState("");
   const [newCost, setNewCost] = useState("");
   const [savingNew, setSavingNew] = useState(false);
@@ -216,6 +218,15 @@ export default function POSPage() {
         for (const p of data) {
           if (!(p.id in next)) {
             next[p.id] = p.costCents === null ? "" : (p.costCents / 100).toFixed(2);
+          }
+        }
+        return next;
+      });
+      setPresentationDrafts((prev) => {
+        const next = { ...prev };
+        for (const p of data) {
+          if (!(p.id in next)) {
+            next[p.id] = p.presentation ?? "";
           }
         }
         return next;
@@ -290,7 +301,10 @@ export default function POSPage() {
     return products.filter((p) => {
       if (p.active !== 1) return false;
       if (category !== "Todas" && p.category !== category) return false;
-      if (term && !`${p.name} ${p.category}`.toLowerCase().includes(term)) {
+      if (
+        term &&
+        !`${p.name} ${p.category} ${p.presentation ?? ""}`.toLowerCase().includes(term)
+      ) {
         return false;
       }
       return true;
@@ -443,8 +457,9 @@ export default function POSPage() {
   async function saveProduct(id: number) {
     const priceRaw = (priceDrafts[id] ?? "").trim();
     const costRaw = (costDrafts[id] ?? "").trim();
-    if (priceRaw === "" && costRaw === "") {
-      setPriceError("Ingresa al menos el costo o el precio de venta.");
+    const presRaw = (presentationDrafts[id] ?? "").trim();
+    if (priceRaw === "" && costRaw === "" && presRaw === "") {
+      setPriceError("Ingresa al menos presentación, costo o precio.");
       return;
     }
     const price = priceRaw === "" ? undefined : parseSolesToCents(priceRaw);
@@ -453,12 +468,17 @@ export default function POSPage() {
       setPriceError("Revisa los montos: deben ser mayores a S/ 0.00 (ej. 15.00).");
       return;
     }
+    if (presRaw.length > 40) {
+      setPriceError("La presentación debe tener máximo 40 caracteres.");
+      return;
+    }
     setSavingPriceId(id);
     setPriceError(null);
     try {
-      const body: { id: number; priceCents?: number; costCents?: number } = { id };
+      const body: { id: number; priceCents?: number; costCents?: number; presentation?: string } = { id };
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
+      if (presRaw !== "") body.presentation = presRaw;
       const res = await fetch("/api/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -501,8 +521,13 @@ export default function POSPage() {
   async function submitNewProduct() {
     const name = newName.trim();
     const cat = newCategory.trim();
+    const pres = newPresentation.trim();
     if (name === "" || cat === "") {
       setAddError("Ponle nombre y categoría al producto.");
+      return;
+    }
+    if (pres.length > 40) {
+      setAddError("La presentación debe tener máximo 40 caracteres.");
       return;
     }
     const price = newPrice.trim() === "" ? undefined : parseSolesToCents(newPrice.trim());
@@ -514,10 +539,11 @@ export default function POSPage() {
     setSavingNew(true);
     setAddError(null);
     try {
-      const body: { name: string; category: string; priceCents?: number; costCents?: number } = {
+      const body: { name: string; category: string; presentation?: string; priceCents?: number; costCents?: number } = {
         name,
         category: cat,
       };
+      if (pres !== "") body.presentation = pres;
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
       const res = await fetch("/api/products", {
@@ -540,9 +566,14 @@ export default function POSPage() {
           [created.id]:
             created.costCents === null ? "" : (created.costCents / 100).toFixed(2),
         }));
+        setPresentationDrafts((prev) => ({
+          ...prev,
+          [created.id]: created.presentation ?? "",
+        }));
       }
       setNewName("");
       setNewCategory("");
+      setNewPresentation("");
       setNewPrice("");
       setNewCost("");
       setShowAddForm(false);
@@ -557,9 +588,7 @@ export default function POSPage() {
   }
 
   function paymentIcon(value: string) {
-    if (value === "tarjeta") return <CreditCard className="h-4 w-4" />;
     if (value === "yape") return <Smartphone className="h-4 w-4" />;
-    if (value === "cheque") return <Landmark className="h-4 w-4" />;
     return <Banknote className="h-4 w-4" />;
   }
 
@@ -584,7 +613,7 @@ export default function POSPage() {
     if (todaySales.length === 0) return;
     const dec = (cents: number) => (cents / 100).toFixed(2).replace(".", ",");
     const rows: string[] = [
-      "Venta;Fecha;Hora;Método de pago;Producto;Cantidad;Precio unit. (S/);Subtotal (S/);Costo unit. (S/);Ganancia (S/)",
+      "Venta;Fecha;Hora;Método de pago;Producto;Presentación;Cantidad;Precio unit. (S/);Subtotal (S/);Costo unit. (S/);Ganancia (S/)",
     ];
     const ordered = [...todaySales].sort((a, b) => a.id - b.id);
     let dayTotal = 0;
@@ -611,6 +640,9 @@ export default function POSPage() {
             hora,
             paymentLabel(sale.paymentMethod),
             `"${item.name.replace(/"/g, '""')}"`,
+            item.presentation
+              ? `"${item.presentation.replace(/"/g, '""')}"`
+              : "—",
             item.quantity,
             dec(item.unitPriceCents),
             dec(item.totalCents),
@@ -701,13 +733,13 @@ export default function POSPage() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-medium text-stone-900">
-                    {line.product.name}
+                    {displayName(line.product)}
                   </p>
                   <button
                     type="button"
                     onClick={() => removeLine(line.product.id)}
                     className="rounded p-1 text-stone-400 hover:bg-red-50 hover:text-red-800"
-                    aria-label={`Quitar ${line.product.name}`}
+                    aria-label={`Quitar ${displayName(line.product)}`}
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -953,6 +985,11 @@ export default function POSPage() {
                                 <h3 className="mt-1 text-sm font-bold leading-snug text-stone-900">
                                   {p.name}
                                 </h3>
+                                {p.presentation && (
+                                  <p className="mt-0.5 text-[11px] font-semibold text-stone-500">
+                                    {p.presentation}
+                                  </p>
+                                )}
                               </div>
                             </div>
                             <div className="mt-auto pt-3">
@@ -1081,6 +1118,17 @@ export default function POSPage() {
                       </datalist>
                     </label>
                     <label className="flex flex-col gap-1 text-xs font-bold text-stone-500">
+                      Presentación (opcional)
+                      <input
+                        type="text"
+                        value={newPresentation}
+                        onChange={(e) => setNewPresentation(e.target.value)}
+                        placeholder="Ej. Descartable 1 L, Botella 750 ml"
+                        maxLength={40}
+                        className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-normal text-stone-900 outline-none placeholder:text-stone-400 focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-bold text-stone-500">
                       Me cuesta S/ (opcional)
                       <input
                         type="number"
@@ -1204,6 +1252,23 @@ export default function POSPage() {
                                 Desactivado
                               </span>
                             )}
+                            <input
+                              type="text"
+                              value={presentationDrafts[p.id] ?? ""}
+                              onChange={(e) =>
+                                setPresentationDrafts((prev) => ({
+                                  ...prev,
+                                  [p.id]: e.target.value,
+                                }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveProduct(p.id);
+                              }}
+                              placeholder="Presentación (ej. Descartable 1 L)"
+                              maxLength={40}
+                              aria-label={`Presentación de ${p.name}`}
+                              className="mt-2 w-full rounded-lg border border-stone-200 px-2.5 py-1.5 text-xs text-stone-600 outline-none placeholder:text-stone-400 focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                            />
                           </div>
                           <div className="grid grid-cols-2 items-center gap-2">
                             <label className="relative">
@@ -1421,7 +1486,7 @@ export default function POSPage() {
                               className="flex items-center justify-between gap-2 text-xs text-stone-600"
                             >
                               <span>
-                                {item.quantity} × {item.name}
+                                {item.quantity} × {displayName(item)}
                               </span>
                               <span className="font-bold">
                                 {formatPEN(item.totalCents)}
@@ -1537,7 +1602,7 @@ export default function POSPage() {
                 <li key={i} className="text-sm">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-stone-900">
-                      {item.quantity} × {item.name}
+                      {item.quantity} × {displayName(item)}
                     </span>
                     <span className="font-bold">{formatPEN(item.totalCents)}</span>
                   </div>
@@ -1620,7 +1685,7 @@ export default function POSPage() {
             <p className="mt-4 text-xs font-bold uppercase tracking-wide text-stone-500">
               Método de pago
             </p>
-            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4" role="radiogroup" aria-label="Método de pago">
+            <div className="mt-2 grid grid-cols-2 gap-2" role="radiogroup" aria-label="Método de pago">
               {PAYMENT_OPTIONS.map((option) => (
                 <button
                   key={option.value}

@@ -19,9 +19,10 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json({ error: "Cuerpo JSON inválido." }, { status: 400 });
   }
-  const { name, category, priceCents, costCents } = body as {
+  const { name, category, presentation, priceCents, costCents } = body as {
     name?: unknown;
     category?: unknown;
+    presentation?: unknown;
     priceCents?: unknown;
     costCents?: unknown;
   };
@@ -29,9 +30,18 @@ export async function POST(request: Request) {
     if (typeof name !== "string" || typeof category !== "string") {
       throw new ValidationError("Nombre y categoría son obligatorios.");
     }
+    if (
+      presentation !== undefined &&
+      presentation !== null &&
+      typeof presentation !== "string"
+    ) {
+      throw new ValidationError("Presentación inválida.");
+    }
     const products = await createProduct({
       name,
       category,
+      presentation:
+        typeof presentation === "string" ? presentation : undefined,
       priceCents: optionalCents(priceCents),
       costCents: optionalCents(costCents),
     });
@@ -57,17 +67,26 @@ export async function PATCH(request: Request) {
   } catch {
     return NextResponse.json({ error: "Cuerpo JSON inválido." }, { status: 400 });
   }
-  const { id, priceCents, costCents, active } = body as {
+  const { id, priceCents, costCents, active, presentation } = body as {
     id?: unknown;
     priceCents?: unknown;
     costCents?: unknown;
     active?: unknown;
+    presentation?: unknown;
   };
   try {
+    let pres: string | null | undefined;
+    if (presentation === undefined) pres = undefined;
+    else if (presentation === null || typeof presentation === "string") {
+      pres = presentation;
+    } else {
+      throw new ValidationError("Presentación inválida.");
+    }
     const products = await updateProduct(typeof id === "number" ? id : NaN, {
       priceCents: optionalCents(priceCents),
       costCents: optionalCents(costCents),
       active: typeof active === "boolean" ? active : undefined,
+      presentation: pres,
     });
     return NextResponse.json(products);
   } catch (error) {

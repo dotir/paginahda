@@ -31,8 +31,8 @@ pestaña **Catálogo** → registra tus precios de reventa en soles.
 ## Notas
 
 - El ticket es **comprobante interno, no válido como comprobante fiscal**.
-- Métodos de pago: efectivo, tarjeta, yape y cheque. Efectivo y cheque
-  registran monto recibido y vuelto (calculado en el servidor).
+- Métodos de pago: efectivo y yape. Efectivo registra monto recibido y
+  vuelto (calculado en el servidor).
 - Las ventas son idempotentes por `requestId`: reintentar no duplica.
 - En **Catálogo** anota el costo (a cuánto te lo dan) y el precio (a cuánto
   lo vendes); la ganancia se calcula sola y cada venta guarda el costo del

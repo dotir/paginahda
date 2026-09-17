@@ -5,6 +5,7 @@ export type Product = {
   id: number;
   name: string;
   category: string;
+  presentation: string | null;
   priceCents: number | null;
   costCents: number | null;
   active: number;
@@ -13,6 +14,7 @@ export type Product = {
 export type SaleItem = {
   productId: number;
   name: string;
+  presentation: string | null;
   quantity: number;
   unitPriceCents: number;
   unitCostCents: number | null;
@@ -29,11 +31,11 @@ export type Sale = {
   items: SaleItem[];
 };
 
-export const PAYMENT_METHODS = ["efectivo", "tarjeta", "yape", "cheque"] as const;
+export const PAYMENT_METHODS = ["efectivo", "yape"] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 // Métodos donde se registra monto recibido y se calcula vuelto.
-const CHANGE_METHODS: ReadonlySet<string> = new Set(["efectivo", "cheque"]);
+const CHANGE_METHODS: ReadonlySet<string> = new Set(["efectivo"]);
 
 export class ValidationError extends Error {}
 
@@ -84,6 +86,7 @@ function ensureSchema(): Promise<void> {
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             category TEXT NOT NULL,
+            presentation TEXT,
             price_cents INTEGER CHECK (price_cents IS NULL OR price_cents > 0),
             cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents > 0),
             active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
@@ -102,6 +105,7 @@ function ensureSchema(): Promise<void> {
             sale_id INTEGER NOT NULL REFERENCES sales(id),
             product_id INTEGER NOT NULL,
             name TEXT NOT NULL,
+            presentation TEXT,
             quantity INTEGER NOT NULL CHECK (quantity > 0),
             unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents > 0),
             unit_cost_cents INTEGER CHECK (unit_cost_cents IS NULL OR unit_cost_cents > 0),
@@ -119,6 +123,8 @@ function ensureSchema(): Promise<void> {
         "ALTER TABLE products ADD COLUMN cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents > 0)",
         "ALTER TABLE sale_items ADD COLUMN unit_cost_cents INTEGER CHECK (unit_cost_cents IS NULL OR unit_cost_cents > 0)",
         "ALTER TABLE products ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))",
+        "ALTER TABLE products ADD COLUMN presentation TEXT",
+        "ALTER TABLE sale_items ADD COLUMN presentation TEXT",
       ]) {
         try {
           await client.execute(sql);
@@ -144,6 +150,10 @@ function toProduct(row: Row): Product {
     id: num(row.id),
     name: String(row.name),
     category: String(row.category),
+    presentation:
+      row.presentation === null || row.presentation === undefined
+        ? null
+        : String(row.presentation),
     priceCents: nullableNum(row.priceCents),
     costCents: nullableNum(row.costCents),
     active: num(row.active),
@@ -164,6 +174,7 @@ type SaleItemRow = {
   sale_id: number;
   product_id: number;
   name: string;
+  presentation: string | null;
   quantity: number;
   unit_price_cents: number;
   unit_cost_cents: number | null;
@@ -187,6 +198,10 @@ function toSaleItemRow(row: Row): SaleItemRow {
     sale_id: num(row.sale_id),
     product_id: num(row.product_id),
     name: String(row.name),
+    presentation:
+      row.presentation === null || row.presentation === undefined
+        ? null
+        : String(row.presentation),
     quantity: num(row.quantity),
     unit_price_cents: num(row.unit_price_cents),
     unit_cost_cents: nullableNum(row.unit_cost_cents),
@@ -205,6 +220,7 @@ function assembleSale(row: SaleRow, items: SaleItemRow[]): Sale {
     items: items.map((item) => ({
       productId: item.product_id,
       name: item.name,
+      presentation: item.presentation,
       quantity: item.quantity,
       unitPriceCents: item.unit_price_cents,
       unitCostCents: item.unit_cost_cents,
@@ -222,7 +238,7 @@ async function loadSale(db: Executor, saleId: number): Promise<Sale> {
   });
   if (row.rows.length === 0) throw new Error("Venta no encontrada tras crearla.");
   const items = await db.execute({
-    sql: "SELECT sale_id, product_id, name, quantity, unit_price_cents, unit_cost_cents, total_cents FROM sale_items WHERE sale_id = ? ORDER BY id",
+    sql: "SELECT sale_id, product_id, name, presentation, quantity, unit_price_cents, unit_cost_cents, total_cents FROM sale_items WHERE sale_id = ? ORDER BY id",
     args: [saleId],
   });
   return assembleSale(toSaleRow(row.rows[0]), items.rows.map(toSaleItemRow));
@@ -231,7 +247,7 @@ async function loadSale(db: Executor, saleId: number): Promise<Sale> {
 export async function getProducts(): Promise<Product[]> {
   await ensureSchema();
   const rs = await getClient().execute(
-    "SELECT id, name, category, price_cents AS priceCents, cost_cents AS costCents, active FROM products ORDER BY id",
+    "SELECT id, name, category, presentation, price_cents AS priceCents, cost_cents AS costCents, active FROM products ORDER BY id",
   );
   return rs.rows.map(toProduct);
 }
@@ -246,9 +262,20 @@ function checkMoney(label: string, value: number | null | undefined) {
   }
 }
 
+function checkPresentation(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > 40) {
+    throw new ValidationError("La presentación debe tener máximo 40 caracteres.");
+  }
+  return trimmed;
+}
+
 export async function createProduct(input: {
   name: string;
   category: string;
+  presentation?: string | null;
   priceCents?: number | null;
   costCents?: number | null;
 }): Promise<Product[]> {
@@ -262,11 +289,12 @@ export async function createProduct(input: {
   }
   checkMoney("precio", input.priceCents);
   checkMoney("costo", input.costCents);
+  const presentation = checkPresentation(input.presentation);
   await ensureSchema();
   try {
     await getClient().execute({
-      sql: "INSERT INTO products (name, category, price_cents, cost_cents) VALUES (?, ?, ?, ?)",
-      args: [name, category, input.priceCents ?? null, input.costCents ?? null],
+      sql: "INSERT INTO products (name, category, presentation, price_cents, cost_cents) VALUES (?, ?, ?, ?, ?)",
+      args: [name, category, presentation ?? null, input.priceCents ?? null, input.costCents ?? null],
     });
   } catch (error) {
     if (/unique constraint/i.test(String(error))) {
@@ -279,20 +307,31 @@ export async function createProduct(input: {
 
 export async function updateProduct(
   id: number,
-  patch: { priceCents?: number | null; costCents?: number | null; active?: boolean },
+  patch: {
+    priceCents?: number | null;
+    costCents?: number | null;
+    active?: boolean;
+    presentation?: string | null;
+  },
 ): Promise<Product[]> {
   if (!Number.isInteger(id) || id <= 0) {
     throw new ValidationError("Producto inválido.");
   }
-  const { priceCents, costCents, active } = patch;
-  if (priceCents === undefined && costCents === undefined && active === undefined) {
+  const { priceCents, costCents, active, presentation } = patch;
+  if (
+    priceCents === undefined &&
+    costCents === undefined &&
+    active === undefined &&
+    presentation === undefined
+  ) {
     throw new ValidationError("Nada que actualizar.");
   }
   checkMoney("precio", priceCents);
   checkMoney("costo", costCents);
+  const cleanPresentation = checkPresentation(presentation);
   await ensureSchema();
   const sets: string[] = [];
-  const args: Array<number | null> = [];
+  const args: Array<number | string | null> = [];
   if (priceCents !== undefined) {
     sets.push("price_cents = ?");
     args.push(priceCents);
@@ -304,6 +343,10 @@ export async function updateProduct(
   if (active !== undefined) {
     sets.push("active = ?");
     args.push(active ? 1 : 0);
+  }
+  if (presentation !== undefined) {
+    sets.push("presentation = ?");
+    args.push(cleanPresentation ?? null);
   }
   args.push(id);
   const result = await getClient().execute({
@@ -326,7 +369,7 @@ export async function getSales(): Promise<Sale[]> {
   if (saleRows.length === 0) return [];
   const ids = saleRows.map((row) => row.id);
   const itemsRs = await client.execute({
-    sql: `SELECT sale_id, product_id, name, quantity, unit_price_cents, unit_cost_cents, total_cents
+    sql: `SELECT sale_id, product_id, name, presentation, quantity, unit_price_cents, unit_cost_cents, total_cents
           FROM sale_items WHERE sale_id IN (${ids.map(() => "?").join(",")}) ORDER BY id`,
     args: ids,
   });
@@ -386,7 +429,7 @@ export async function createSale(input: {
     let total = 0;
     for (const item of items) {
       const found = await tx.execute({
-        sql: "SELECT id, name, price_cents AS priceCents, cost_cents AS costCents, active FROM products WHERE id = ?",
+        sql: "SELECT id, name, presentation, price_cents AS priceCents, cost_cents AS costCents, active FROM products WHERE id = ?",
         args: [item.productId],
       });
       if (found.rows.length === 0) {
@@ -395,6 +438,10 @@ export async function createSale(input: {
       const product = {
         id: num(found.rows[0].id),
         name: String(found.rows[0].name),
+        presentation:
+          found.rows[0].presentation === null || found.rows[0].presentation === undefined
+            ? null
+            : String(found.rows[0].presentation),
         priceCents: nullableNum(found.rows[0].priceCents),
         costCents: nullableNum(found.rows[0].costCents),
         active: num(found.rows[0].active),
@@ -410,6 +457,7 @@ export async function createSale(input: {
       lines.push({
         productId: product.id,
         name: product.name,
+        presentation: product.presentation,
         quantity: item.quantity,
         unitPriceCents: product.priceCents,
         unitCostCents: product.costCents,
@@ -439,11 +487,12 @@ export async function createSale(input: {
     const saleId = Number(inserted.lastInsertRowid);
     for (const line of lines) {
       await tx.execute({
-        sql: "INSERT INTO sale_items (sale_id, product_id, name, quantity, unit_price_cents, unit_cost_cents, total_cents) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        sql: "INSERT INTO sale_items (sale_id, product_id, name, presentation, quantity, unit_price_cents, unit_cost_cents, total_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         args: [
           saleId,
           line.productId,
           line.name,
+          line.presentation,
           line.quantity,
           line.unitPriceCents,
           line.unitCostCents,
