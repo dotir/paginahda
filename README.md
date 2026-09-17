@@ -1,4 +1,4 @@
-# La Cava · Punto de venta
+# El Arbolito · Punto de venta
 
 POS para distribuidor independiente de vinos y piscos **Hacienda del Abuelo**
 (Valle de Vítor, Arequipa). No es tienda oficial de la bodega.
