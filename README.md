@@ -1,36 +1,36 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# La Cava · Punto de venta
 
-## Getting Started
+POS para distribuidor independiente de vinos y piscos **Hacienda del Abuelo**
+(Valle de Vítor, Arequipa). No es tienda oficial de la bodega.
 
-First, run the development server:
+Next.js (App Router) + SQLite vía `@libsql/client`:
+
+- **Local**: usa `pos.sqlite` (se crea solo al arrancar).
+- **Vercel**: usa Turso con `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN`.
+
+## Uso local
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abrir <http://127.0.0.1:3000>. Los precios empiezan pendientes:
+pestaña **Catálogo** → registra tus precios de reventa en soles.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Despliegue en Vercel + Turso
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Crea la BD (gratis) en <https://turso.tech> o con su CLI:
+   `turso db create lacava && turso db show lacava --url` y
+   `turso db tokens create lacava`.
+2. En Vercel → proyecto → Settings → Environment Variables:
+   - `TURSO_DATABASE_URL` = URL (`libsql://...`)
+   - `TURSO_AUTH_TOKEN` = token
+3. Deploy. El esquema y el catálogo se crean solos al primer arranque.
 
-## Learn More
+## Notas
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- El ticket es **comprobante interno, no válido como comprobante fiscal**.
+- Métodos de pago: efectivo, tarjeta, yape y cheque. Efectivo y cheque
+  registran monto recibido y vuelto (calculado en el servidor).
+- Las ventas son idempotentes por `requestId`: reintentar no duplica.

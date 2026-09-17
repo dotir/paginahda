@@ -4,7 +4,7 @@ import { ValidationError, getProducts, updateProductPrice } from "@/app/db";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(getProducts());
+  return NextResponse.json(await getProducts());
 }
 
 export async function PATCH(request: Request) {
@@ -16,7 +16,7 @@ export async function PATCH(request: Request) {
   }
   const { id, priceCents } = body as { id?: unknown; priceCents?: unknown };
   try {
-    const products = updateProductPrice(
+    const products = await updateProductPrice(
       typeof id === "number" ? id : NaN,
       typeof priceCents === "number" ? priceCents : NaN,
     );
