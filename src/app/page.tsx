@@ -29,6 +29,7 @@ type Product = {
   name: string;
   category: string;
   presentation: string | null;
+  imageUrl: string | null;
   priceCents: number | null;
   costCents: number | null;
   active: number;
@@ -195,10 +196,13 @@ export default function POSPage() {
   const [priceDrafts, setPriceDrafts] = useState<Record<number, string>>({});
   const [costDrafts, setCostDrafts] = useState<Record<number, string>>({});
   const [presentationDrafts, setPresentationDrafts] = useState<Record<number, string>>({});
+  const [imageDrafts, setImageDrafts] = useState<Record<number, string>>({});
+  const [brokenImages, setBrokenImages] = useState<Set<number>>(new Set());
   const [showAddForm, setShowAddForm] = useState(false);
   const [newName, setNewName] = useState("");
   const [newCategory, setNewCategory] = useState("");
   const [newPresentation, setNewPresentation] = useState("");
+  const [newImage, setNewImage] = useState("");
   const [newPrice, setNewPrice] = useState("");
   const [newCost, setNewCost] = useState("");
   const [savingNew, setSavingNew] = useState(false);
@@ -243,6 +247,15 @@ export default function POSPage() {
         for (const p of data) {
           if (!(p.id in next)) {
             next[p.id] = p.presentation ?? "";
+          }
+        }
+        return next;
+      });
+      setImageDrafts((prev) => {
+        const next = { ...prev };
+        for (const p of data) {
+          if (!(p.id in next)) {
+            next[p.id] = p.imageUrl ?? "";
           }
         }
         return next;
@@ -482,8 +495,9 @@ export default function POSPage() {
     const priceRaw = (priceDrafts[id] ?? "").trim();
     const costRaw = (costDrafts[id] ?? "").trim();
     const presRaw = (presentationDrafts[id] ?? "").trim();
-    if (priceRaw === "" && costRaw === "" && presRaw === "") {
-      setPriceError("Ingresa al menos presentación, costo o precio.");
+    const imgRaw = (imageDrafts[id] ?? "").trim();
+    if (priceRaw === "" && costRaw === "" && presRaw === "" && imgRaw === "") {
+      setPriceError("Ingresa al menos foto, presentación, costo o precio.");
       return;
     }
     const price = priceRaw === "" ? undefined : parseSolesToCents(priceRaw);
@@ -496,13 +510,18 @@ export default function POSPage() {
       setPriceError("La presentación debe tener máximo 40 caracteres.");
       return;
     }
+    if (imgRaw !== "" && (imgRaw.length > 500 || !/^https?:\/\/.+\..+/.test(imgRaw))) {
+      setPriceError("La foto debe ser una URL válida (http:// o https://).");
+      return;
+    }
     setSavingPriceId(id);
     setPriceError(null);
     try {
-      const body: { id: number; priceCents?: number; costCents?: number; presentation?: string } = { id };
+      const body: { id: number; priceCents?: number; costCents?: number; presentation?: string; imageUrl?: string } = { id };
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
       if (presRaw !== "") body.presentation = presRaw;
+      if (imgRaw !== "") body.imageUrl = imgRaw;
       const res = await apiFetch("/api/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -511,6 +530,12 @@ export default function POSPage() {
       if (!res.ok) throw new Error(await readError(res));
       const data = (await res.json()) as Product[];
       setProducts(data);
+      setBrokenImages((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       setConnected(true);
     } catch (error) {
       setPriceError(
@@ -560,14 +585,20 @@ export default function POSPage() {
       setAddError("Revisa los montos: deben ser mayores a S/ 0.00.");
       return;
     }
+    const img = newImage.trim();
+    if (img !== "" && (img.length > 500 || !/^https?:\/\/.+\..+/.test(img))) {
+      setAddError("La foto debe ser una URL válida (http:// o https://).");
+      return;
+    }
     setSavingNew(true);
     setAddError(null);
     try {
-      const body: { name: string; category: string; presentation?: string; priceCents?: number; costCents?: number } = {
+      const body: { name: string; category: string; presentation?: string; imageUrl?: string; priceCents?: number; costCents?: number } = {
         name,
         category: cat,
       };
       if (pres !== "") body.presentation = pres;
+      if (img !== "") body.imageUrl = img;
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
       const res = await apiFetch("/api/products", {
@@ -594,10 +625,15 @@ export default function POSPage() {
           ...prev,
           [created.id]: created.presentation ?? "",
         }));
+        setImageDrafts((prev) => ({
+          ...prev,
+          [created.id]: created.imageUrl ?? "",
+        }));
       }
       setNewName("");
       setNewCategory("");
       setNewPresentation("");
+      setNewImage("");
       setNewPrice("");
       setNewCost("");
       setShowAddForm(false);
@@ -1017,29 +1053,48 @@ export default function POSPage() {
                                 : "border-dashed border-stone-300 opacity-75"
                             }`}
                           >
-                            <div className="flex items-start gap-3">
-                              <span
-                                className="bottle mt-1"
-                                style={{ "--bottle": style.bottle } as React.CSSProperties}
-                                aria-hidden
-                              >
-                                <span className="bottle-body" />
-                              </span>
-                              <div className="min-w-0">
+                            {p.imageUrl && !brokenImages.has(p.id) ? (
+                              // <img> intencional: URLs arbitrarias del usuario, sin dominios fijos para next/image.
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={p.imageUrl}
+                                alt={`Foto de ${displayName(p)}`}
+                                loading="lazy"
+                                onError={() =>
+                                  setBrokenImages((prev) => {
+                                    if (prev.has(p.id)) return prev;
+                                    const next = new Set(prev);
+                                    next.add(p.id);
+                                    return next;
+                                  })
+                                }
+                                className="h-40 w-full rounded-xl bg-white object-contain"
+                              />
+                            ) : (
+                              <div className="flex h-24 items-center justify-center rounded-xl bg-stone-50">
                                 <span
-                                  className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-bold ${style.badge}`}
+                                  className="bottle"
+                                  style={{ "--bottle": style.bottle } as React.CSSProperties}
+                                  aria-hidden
                                 >
-                                  {p.category}
+                                  <span className="bottle-body" />
                                 </span>
-                                <h3 className="mt-1 text-sm font-bold leading-snug text-stone-900">
-                                  {p.name}
-                                </h3>
-                                {p.presentation && (
-                                  <p className="mt-0.5 text-[11px] font-semibold text-stone-500">
-                                    {p.presentation}
-                                  </p>
-                                )}
                               </div>
+                            )}
+                            <div className="min-w-0 pt-2">
+                              <span
+                                className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-bold ${style.badge}`}
+                              >
+                                {p.category}
+                              </span>
+                              <h3 className="mt-1 text-sm font-bold leading-snug text-stone-900">
+                                {p.name}
+                              </h3>
+                              {p.presentation && (
+                                <p className="mt-0.5 text-[11px] font-semibold text-stone-500">
+                                  {p.presentation}
+                                </p>
+                              )}
                             </div>
                             <div className="mt-auto pt-3">
                               {enabled ? (
@@ -1174,6 +1229,17 @@ export default function POSPage() {
                         onChange={(e) => setNewPresentation(e.target.value)}
                         placeholder="Ej. Descartable 1 L, Botella 750 ml"
                         maxLength={40}
+                        className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-normal text-stone-900 outline-none placeholder:text-stone-400 focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-bold text-stone-500 sm:col-span-2">
+                      Foto (URL, opcional)
+                      <input
+                        type="url"
+                        value={newImage}
+                        onChange={(e) => setNewImage(e.target.value)}
+                        placeholder="https://…"
+                        maxLength={500}
                         className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-normal text-stone-900 outline-none placeholder:text-stone-400 focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
                       />
                     </label>
@@ -1317,6 +1383,23 @@ export default function POSPage() {
                               maxLength={40}
                               aria-label={`Presentación de ${p.name}`}
                               className="mt-2 w-full rounded-lg border border-stone-200 px-2.5 py-1.5 text-xs text-stone-600 outline-none placeholder:text-stone-400 focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
+                            />
+                            <input
+                              type="url"
+                              value={imageDrafts[p.id] ?? ""}
+                              onChange={(e) =>
+                                setImageDrafts((prev) => ({
+                                  ...prev,
+                                  [p.id]: e.target.value,
+                                }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveProduct(p.id);
+                              }}
+                              placeholder="Foto (URL https://…)"
+                              maxLength={500}
+                              aria-label={`Foto de ${p.name}`}
+                              className="mt-1.5 w-full rounded-lg border border-stone-200 px-2.5 py-1.5 text-xs text-stone-600 outline-none placeholder:text-stone-400 focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
                             />
                           </div>
                           <div className="grid grid-cols-2 items-center gap-2">

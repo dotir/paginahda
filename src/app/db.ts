@@ -6,6 +6,7 @@ export type Product = {
   name: string;
   category: string;
   presentation: string | null;
+  imageUrl: string | null;
   priceCents: number | null;
   costCents: number | null;
   active: number;
@@ -87,6 +88,7 @@ function ensureSchema(): Promise<void> {
             name TEXT NOT NULL UNIQUE,
             category TEXT NOT NULL,
             presentation TEXT,
+            image_url TEXT,
             price_cents INTEGER CHECK (price_cents IS NULL OR price_cents > 0),
             cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents > 0),
             active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
@@ -125,6 +127,7 @@ function ensureSchema(): Promise<void> {
         "ALTER TABLE products ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))",
         "ALTER TABLE products ADD COLUMN presentation TEXT",
         "ALTER TABLE sale_items ADD COLUMN presentation TEXT",
+        "ALTER TABLE products ADD COLUMN image_url TEXT",
       ]) {
         try {
           await client.execute(sql);
@@ -154,6 +157,10 @@ function toProduct(row: Row): Product {
       row.presentation === null || row.presentation === undefined
         ? null
         : String(row.presentation),
+    imageUrl:
+      row.imageUrl === null || row.imageUrl === undefined
+        ? null
+        : String(row.imageUrl),
     priceCents: nullableNum(row.priceCents),
     costCents: nullableNum(row.costCents),
     active: num(row.active),
@@ -247,7 +254,7 @@ async function loadSale(db: Executor, saleId: number): Promise<Sale> {
 export async function getProducts(): Promise<Product[]> {
   await ensureSchema();
   const rs = await getClient().execute(
-    "SELECT id, name, category, presentation, price_cents AS priceCents, cost_cents AS costCents, active FROM products ORDER BY id",
+    "SELECT id, name, category, presentation, image_url AS imageUrl, price_cents AS priceCents, cost_cents AS costCents, active FROM products ORDER BY id",
   );
   return rs.rows.map(toProduct);
 }
@@ -272,10 +279,24 @@ function checkPresentation(value: string | null | undefined): string | null | un
   return trimmed;
 }
 
+function checkImageUrl(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > 500) {
+    throw new ValidationError("La URL de la foto es demasiado larga.");
+  }
+  if (!/^https?:\/\/.+\..+/.test(trimmed)) {
+    throw new ValidationError("La foto debe ser una URL válida (http:// o https://).");
+  }
+  return trimmed;
+}
+
 export async function createProduct(input: {
   name: string;
   category: string;
   presentation?: string | null;
+  imageUrl?: string | null;
   priceCents?: number | null;
   costCents?: number | null;
 }): Promise<Product[]> {
@@ -290,11 +311,12 @@ export async function createProduct(input: {
   checkMoney("precio", input.priceCents);
   checkMoney("costo", input.costCents);
   const presentation = checkPresentation(input.presentation);
+  const imageUrl = checkImageUrl(input.imageUrl);
   await ensureSchema();
   try {
     await getClient().execute({
-      sql: "INSERT INTO products (name, category, presentation, price_cents, cost_cents) VALUES (?, ?, ?, ?, ?)",
-      args: [name, category, presentation ?? null, input.priceCents ?? null, input.costCents ?? null],
+      sql: "INSERT INTO products (name, category, presentation, image_url, price_cents, cost_cents) VALUES (?, ?, ?, ?, ?, ?)",
+      args: [name, category, presentation ?? null, imageUrl ?? null, input.priceCents ?? null, input.costCents ?? null],
     });
   } catch (error) {
     if (/unique constraint/i.test(String(error))) {
@@ -312,23 +334,26 @@ export async function updateProduct(
     costCents?: number | null;
     active?: boolean;
     presentation?: string | null;
+    imageUrl?: string | null;
   },
 ): Promise<Product[]> {
   if (!Number.isInteger(id) || id <= 0) {
     throw new ValidationError("Producto inválido.");
   }
-  const { priceCents, costCents, active, presentation } = patch;
+  const { priceCents, costCents, active, presentation, imageUrl } = patch;
   if (
     priceCents === undefined &&
     costCents === undefined &&
     active === undefined &&
-    presentation === undefined
+    presentation === undefined &&
+    imageUrl === undefined
   ) {
     throw new ValidationError("Nada que actualizar.");
   }
   checkMoney("precio", priceCents);
   checkMoney("costo", costCents);
   const cleanPresentation = checkPresentation(presentation);
+  const cleanImageUrl = checkImageUrl(imageUrl);
   await ensureSchema();
   const sets: string[] = [];
   const args: Array<number | string | null> = [];
@@ -347,6 +372,10 @@ export async function updateProduct(
   if (presentation !== undefined) {
     sets.push("presentation = ?");
     args.push(cleanPresentation ?? null);
+  }
+  if (imageUrl !== undefined) {
+    sets.push("image_url = ?");
+    args.push(cleanImageUrl ?? null);
   }
   args.push(id);
   const result = await getClient().execute({

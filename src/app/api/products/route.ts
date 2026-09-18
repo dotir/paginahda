@@ -19,10 +19,11 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json({ error: "Cuerpo JSON inválido." }, { status: 400 });
   }
-  const { name, category, presentation, priceCents, costCents } = body as {
+  const { name, category, presentation, imageUrl, priceCents, costCents } = body as {
     name?: unknown;
     category?: unknown;
     presentation?: unknown;
+    imageUrl?: unknown;
     priceCents?: unknown;
     costCents?: unknown;
   };
@@ -42,6 +43,7 @@ export async function POST(request: Request) {
       category,
       presentation:
         typeof presentation === "string" ? presentation : undefined,
+      imageUrl: optionalText(imageUrl),
       priceCents: optionalCents(priceCents),
       costCents: optionalCents(costCents),
     });
@@ -60,6 +62,12 @@ function optionalCents(value: unknown): number | null | undefined {
   return typeof value === "number" ? value : NaN;
 }
 
+function optionalText(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value === "string") return value;
+  throw new ValidationError("Texto inválido.");
+}
+
 export async function PATCH(request: Request) {
   let body: unknown;
   try {
@@ -67,12 +75,13 @@ export async function PATCH(request: Request) {
   } catch {
     return NextResponse.json({ error: "Cuerpo JSON inválido." }, { status: 400 });
   }
-  const { id, priceCents, costCents, active, presentation } = body as {
+  const { id, priceCents, costCents, active, presentation, imageUrl } = body as {
     id?: unknown;
     priceCents?: unknown;
     costCents?: unknown;
     active?: unknown;
     presentation?: unknown;
+    imageUrl?: unknown;
   };
   try {
     let pres: string | null | undefined;
@@ -87,6 +96,7 @@ export async function PATCH(request: Request) {
       costCents: optionalCents(costCents),
       active: typeof active === "boolean" ? active : undefined,
       presentation: pres,
+      imageUrl: optionalText(imageUrl),
     });
     return NextResponse.json(products);
   } catch (error) {
