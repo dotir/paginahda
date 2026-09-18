@@ -254,7 +254,7 @@ async function loadSale(db: Executor, saleId: number): Promise<Sale> {
 export async function getProducts(): Promise<Product[]> {
   await ensureSchema();
   const rs = await getClient().execute(
-    "SELECT id, name, category, presentation, image_url AS imageUrl, price_cents AS priceCents, cost_cents AS costCents, active FROM products ORDER BY id",
+    "SELECT id, name, category, presentation, image_url AS imageUrl, price_cents AS priceCents, cost_cents AS costCents, active FROM products ORDER BY active DESC, id ASC",
   );
   return rs.rows.map(toProduct);
 }
