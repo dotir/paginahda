@@ -411,6 +411,37 @@ export async function getSales(): Promise<Sale[]> {
   return saleRows.map((row) => assembleSale(row, bySale.get(row.id) ?? []));
 }
 
+export async function deleteSale(id: number): Promise<Sale[]> {
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new ValidationError("Venta inválida.");
+  }
+  await ensureSchema();
+  const tx = await getClient().transaction("write");
+  try {
+    await tx.execute({
+      sql: "DELETE FROM sale_items WHERE sale_id = ?",
+      args: [id],
+    });
+    const result = await tx.execute({
+      sql: "DELETE FROM sales WHERE id = ?",
+      args: [id],
+    });
+    if (result.rowsAffected === 0) {
+      await tx.rollback();
+      throw new ValidationError("Venta no encontrada.");
+    }
+    await tx.commit();
+  } catch (error) {
+    try {
+      await tx.rollback();
+    } catch {
+      // la transacción ya terminó
+    }
+    throw error;
+  }
+  return getSales();
+}
+
 export async function createSale(input: {
   requestId: string;
   items: Array<{ productId: number; quantity: number }>;

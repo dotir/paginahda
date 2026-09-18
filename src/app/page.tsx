@@ -208,6 +208,7 @@ export default function POSPage() {
   const [savingNew, setSavingNew] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<string | null>(null);
+  const [deletingSaleId, setDeletingSaleId] = useState<number | null>(null);
   const [savingPriceId, setSavingPriceId] = useState<number | null>(null);
   const [priceError, setPriceError] = useState<string | null>(null);
 
@@ -656,6 +657,28 @@ export default function POSPage() {
       // Recarga completa intencional: limpia todo el estado de la sesión.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
       window.location.href = "/login";
+    }
+  }
+
+  async function deleteSaleById(id: number) {
+    if (
+      !window.confirm(
+        `¿Anular la venta #${id}? Se borrará del historial y del reporte.`,
+      )
+    ) {
+      return;
+    }
+    setDeletingSaleId(id);
+    try {
+      const res = await apiFetch(`/api/sales/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await readError(res));
+      setSales((await res.json()) as Sale[]);
+    } catch (error) {
+      setSalesError(
+        error instanceof Error ? error.message : "No se pudo anular la venta.",
+      );
+    } finally {
+      setDeletingSaleId(null);
     }
   }
 
@@ -1641,14 +1664,25 @@ export default function POSPage() {
                           )}
                         </ul>
                       </details>
-                      <button
-                        type="button"
-                        onClick={() => openTicket(sale)}
-                        className="mt-2 flex items-center gap-1.5 rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-bold text-stone-700 hover:border-red-900 hover:text-red-900"
-                      >
-                        <Printer className="h-3.5 w-3.5" />
-                        Ver ticket
-                      </button>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openTicket(sale)}
+                          className="flex items-center gap-1.5 rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-bold text-stone-700 hover:border-red-900 hover:text-red-900"
+                        >
+                          <Printer className="h-3.5 w-3.5" />
+                          Ver ticket
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteSaleById(sale.id)}
+                          disabled={deletingSaleId === sale.id}
+                          className="flex items-center gap-1.5 rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-bold text-stone-500 hover:border-red-800 hover:text-red-800 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          {deletingSaleId === sale.id ? "Anulando…" : "Anular"}
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
