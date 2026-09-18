@@ -517,11 +517,13 @@ export default function POSPage() {
     setSavingPriceId(id);
     setPriceError(null);
     try {
-      const body: { id: number; priceCents?: number; costCents?: number; presentation?: string; imageUrl?: string } = { id };
+      const body: { id: number; priceCents?: number; costCents?: number; presentation?: string | null; imageUrl?: string | null } = { id };
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
-      if (presRaw !== "") body.presentation = presRaw;
-      if (imgRaw !== "") body.imageUrl = imgRaw;
+      // Presentación y foto siempre se envían: igual valor = sin cambios,
+      // vacío = quitar.
+      body.presentation = presRaw === "" ? null : presRaw;
+      body.imageUrl = imgRaw === "" ? null : imgRaw;
       const res = await apiFetch("/api/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
