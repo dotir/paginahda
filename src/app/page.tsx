@@ -96,7 +96,7 @@ async function readError(response: Response) {
 
 export default function POSPage() {
   const { notify } = useToast();
-  const [view, setView] = useState<View>("ventas");
+  const [viewState, setViewState] = useState<View>("ventas");
 
   const [authUser, setAuthUser] = useState<string | null>(null);
   const [role, setRole] = useState<Role | null>(null);
@@ -792,10 +792,19 @@ export default function POSPage() {
 
   /* --------------------------------- render -------------------------------- */
 
-  const navItems = NAV_ITEMS.filter((item) => item.value !== "admin" || isAdmin);
+  // El cajero solo vende, revisa sus ventas y hace su arqueo de caja:
+  // el catálogo y el inventario quedan fuera de su alcance.
+  const visibleViews: View[] = isAdmin
+    ? ["ventas", "catalogo", "inventario", "historial", "caja", "admin"]
+    : ["ventas", "historial", "caja"];
+  const navItems = NAV_ITEMS.filter((item) => visibleViews.includes(item.value));
+  // Red de seguridad: si el rol cambia con la app abierta, la vista prohibida
+  // cae a Ventas en vez de dejar el panel en pantalla.
+  const view = visibleViews.includes(viewState) ? viewState : "ventas";
 
   function goTo(next: View) {
-    setView(next);
+    if (!visibleViews.includes(next)) return;
+    setViewState(next);
     if (next === "caja") void loadCash();
     if (next === "admin" && isAdmin) void loadAdmin();
   }
