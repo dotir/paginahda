@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  SESSION_COOKIE,
-  authConfigured,
-  verifySession,
-} from "@/app/lib/auth";
+import { SESSION_COOKIE, authConfigured, verifySession } from "@/app/lib/auth";
 
 const PUBLIC_PATHS = new Set(["/login", "/api/login", "/api/logout", "/api/me"]);
 
@@ -28,16 +24,16 @@ export async function middleware(request: Request) {
       .map((part) => part.trim())
       .find((part) => part.startsWith(`${SESSION_COOKIE}=`))
       ?.slice(SESSION_COOKIE.length + 1) ?? "";
-  const valid = token
+  const session = token
     ? await verifySession(decodeURIComponent(token))
-    : false;
-  if (!valid && !PUBLIC_PATHS.has(pathname)) {
+    : null;
+  if (!session && !PUBLIC_PATHS.has(pathname)) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "No autenticado." }, { status: 401 });
     }
     return NextResponse.redirect(new URL("/login", url));
   }
-  if (valid && pathname === "/login") {
+  if (session && pathname === "/login") {
     return NextResponse.redirect(new URL("/", url));
   }
   return NextResponse.next();

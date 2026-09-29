@@ -12,6 +12,12 @@ body {
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* El preflight de Tailwind resetea margins: sin esto el <dialog> nativo
+   se pega a la esquina superior izquierda en vez de centrase. */
+dialog {
+  margin: auto;
+}
+
 dialog::backdrop {
   background: rgb(41 32 25 / 0.55);
 }
