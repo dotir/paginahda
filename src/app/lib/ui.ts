@@ -31,6 +31,8 @@ export type {
   PaymentMethod,
   PosUser,
   Product,
+  ReceiptLineDraft,
+  ReceiptResult,
   Role,
   Sale,
   SaleItem,

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import {
   ForbiddenError,
+  ReceiptLine,
   ValidationError,
   createProduct,
   deleteProduct,
   getProducts,
+  receiveStock,
   updateProduct,
 } from "@/app/db";
 import { canEditCatalog } from "@/app/lib/auth";
@@ -58,6 +60,8 @@ export async function POST(request: Request) {
     costCents,
     stock,
     stockMin,
+    unitsPerBox,
+    boxCostCents,
   } = body as Record<string, unknown>;
   try {
     if (typeof name !== "string" || typeof category !== "string") {
@@ -73,6 +77,8 @@ export async function POST(request: Request) {
       costCents: optionalCents(costCents),
       stock: optionalCount(stock),
       stockMin: optionalCount(stockMin),
+      unitsPerBox: optionalCount(unitsPerBox),
+      boxCostCents: optionalCents(boxCostCents),
     });
     return NextResponse.json(products, { status: 201 });
   } catch (error) {
@@ -103,6 +109,8 @@ export async function PATCH(request: Request) {
     imageUrl,
     stock,
     stockMin,
+    unitsPerBox,
+    boxCostCents,
   } = body as Record<string, unknown>;
   try {
     let pres: string | null | undefined;
@@ -120,6 +128,8 @@ export async function PATCH(request: Request) {
       imageUrl: optionalText(imageUrl),
       stock: optionalCount(stock),
       stockMin: optionalCount(stockMin),
+      unitsPerBox: optionalCount(unitsPerBox),
+      boxCostCents: optionalCents(boxCostCents),
     });
     return NextResponse.json(products);
   } catch (error) {
@@ -147,6 +157,40 @@ export async function DELETE(request: Request) {
     return NextResponse.json(products);
   } catch (error) {
     return errorResponse(error);
+  }
+}
+
+/** Recepción de mercadería: suma stock por cajas o por unidades sueltas. */
+export async function PUT(request: Request) {
+  const session = await getSessionUser(request);
+  if (!session || !canEditCatalog(session.role)) {
+    return NextResponse.json(
+      { error: "Solo un administrador puede registrar la recepción de mercadería." },
+      { status: 403 },
+    );
+  }
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Cuerpo JSON inválido." }, { status: 400 });
+  }
+  const { lines, note } = body as { lines?: unknown; note?: unknown };
+  try {
+    const result = await receiveStock({
+      lines: Array.isArray(lines) ? (lines as ReceiptLine[]) : [],
+      user: session.username,
+      note: typeof note === "string" ? note : null,
+    });
+    return NextResponse.json(result);
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof ForbiddenError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
+    return NextResponse.json({ error: "Error interno." }, { status: 500 });
   }
 }
 

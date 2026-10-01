@@ -42,7 +42,8 @@ export async function GET(request: Request) {
   let profitKnown = false;
   let discounts = 0;
   for (const sale of sales) {
-    const date = new Date(sale.createdAt);
+    // Con día efectivo: una venta movida de día cuenta en el día nuevo.
+    const date = new Date(sale.effectiveDate);
     const fecha = date.toLocaleDateString("es-PE");
     const hora = date.toLocaleTimeString("es-PE", {
       hour: "2-digit",

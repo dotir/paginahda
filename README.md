@@ -45,13 +45,13 @@ pestaña **Admin**.
 - **Ventas**: punto de venta. Busca por nombre o categoría, agrega al carrito
   con un toque y cobra. El carrito **se guarda en el dispositivo**: si recargas
   o se te cierra la página, no pierdes la venta.
-- **Catálogo**: crea productos y anota costo, precio, presentación, foto,
-  stock y stock mínimo. Oculta lo que ya no vendas y elimina lo que nunca se
-  vendió.
-- **Stock**: inventario. Deja el stock vacío si el producto no lleva control
-  (se vende sin límite); ponle un mínimo para que te avise cuando esté por
-  agotarse.
-- **Historial**: ventas del periodo con ganancia, anulación y reporte CSV.
+- **Catálogo**: crea productos y anota costo, precio, presentación y foto.
+  Oculta lo que ya no vendas y elimina lo que nunca se vendió.
+- **Stock**: todo lo demás de cada producto, en una sola fila: stock, mínimo,
+  botellas por caja, costo de caja y **recepción del pedido**. Los productos
+  sin control de stock quedan agrupados al final.
+- **Historial**: ventas del periodo con ganancia, anulación y reporte CSV. Con
+  **Mover de día** cambias el día con el que cuenta una venta.
 - **Caja**: abre el turno con el fondo de caja y ciérralo contando el
   efectivo. Te dice si sobra o falta.
 - **Admin** (solo admin): usuarios, movimientos de stock y auditoría.
@@ -68,7 +68,34 @@ pestaña **Admin**.
   cambia si editas el costo después.
 - **Anular** una venta exige un motivo: queda marcada como anulada (no se
   borra), sale de los totales y **devuelve el stock**.
+- **Mover de día** una venta (solo admin, con motivo obligatorio) cambia el día
+  con el que cuenta: se ajusta el total del día, el filtro por fechas y el
+  reporte CSV. El momento real del registro no se toca, y queda marcado
+  "movida de día" con quién lo hizo y por qué. No se puede mover a un día
+  futuro ni cambiar la fecha de una venta anulada.
 - El servidor **rechaza** vender más del stock disponible.
+
+## Recepción de mercadería (cajas)
+
+Cada producto puede tener **botellas por caja** (Catálogo → Botellas/caja) y
+un **costo de caja**. Con eso, en Stock → **Recibir pedido** escribir por
+producto:
+
+- **cajas**: cuántas cajas trae el pedido.
+- **botellas/caja**: cuántas botellas tiene cada caja. Se propone el valor del
+  producto y **puedes corregirlo** si esa caja vino incompleta; el valor
+  corregido queda como predeterminado para la próxima.
+- **sueltas**: botellas que vienen fuera de caja (una caja abierta, muestras).
+
+Ejemplo: pisco con 12 por caja, llegan 3 cajas → +36 botellas. Si una de esas
+cajas solo trae 10, cambias el 12 por 10 en esa línea y el sistema suma 22 en
+vez de 24, y recuerda que ese producto ahora viene en cajas de 10.
+
+En cada fila de Stock, **Recibir del pedido** despliega los campos de cajas.
+Puedes ingresar una línea con su botón, o escribir varias y confirmarlas juntas
+con **Ingresar pedido completo** (abajo, fijo). Cada línea deja su movimiento en
+el historial de stock, con la nota del pedido. Solo el administrador puede
+registrar recepciones.
 
 ## Roles
 
@@ -87,13 +114,21 @@ No se puede desactivar ni degradar al último administrador activo.
   tabla `users`. Las sesiones no se pueden revocar de forma individual (no hay
   lista de revocación): para expulsar a alguien, cámbiala la clave o desactiva
   su usuario.
-- **Auditoría**: toda venta, anulación, ajuste de stock y movimiento de caja
-  queda en `audit_log` con usuario y fecha.
+- **Auditoría**: toda venta, anulación, cambio de fecha, ajuste, recepción y
+  movimiento de caja queda en `audit_log` con usuario y fecha.
+- **Días y zonas horarias**: cada venta guarda `effective_date` con el día local
+  de Perú anclado a las 12:00 UTC. Así una venta de las 23:30 cuenta para ese
+  mismo día y los filtros por rango no se corren. Las ventas viejas se rellenan
+  solas al arrancar.
 - **Migraciones**: las columnas nuevas se agregan solas al arrancar
   (`ALTER TABLE` idempotente), por eso no hay que tocar la BD a mano.
 - El carrito persiste en `localStorage`; la app tiene `manifest.webmanifest`
   para instalarse como PWA, aunque **todavía no funciona sin conexión** (las
   ventas requieren servidor).
+- **Actualización automática**: el POS recarga productos, ventas y caja cada
+  45 s y también al volver a la pestaña o cambiar de vista, siempre en
+  silencio (no parpadea el "cargando"). Si otra caja vendió lo que tenías en el
+  carrito, te avisa con el stock real antes de que intentes cobrar.
 
 ## Lo que no tiene
 

@@ -26,6 +26,7 @@ import CheckoutDialog, {
   type CheckoutPayload,
 } from "@/app/components/CheckoutDialog";
 import HistoryView from "@/app/components/HistoryView";
+import MoveDateDialog from "@/app/components/MoveDateDialog";
 import InventoryView from "@/app/components/InventoryView";
 import SalesView from "@/app/components/SalesView";
 import TicketDialog from "@/app/components/TicketDialog";
@@ -41,7 +42,6 @@ import {
 import {
   endOfDayIso,
   formatPEN,
-  parseCount,
   parseSolesToCents,
   roleLabel,
   saleProfit,
@@ -51,11 +51,15 @@ import {
   type CashSession,
   type PosUser,
   type Product,
+  type ReceiptResult,
   type Role,
   type Sale,
   type StockMovement,
   type View,
 } from "@/app/lib/ui";
+
+/** Cada cuánto se refresca solo el POS, en milisegundos. */
+const POLL_MS = 45_000;
 
 const EMPTY_NEW_PRODUCT: NewProductDraft = {
   name: "",
@@ -64,8 +68,6 @@ const EMPTY_NEW_PRODUCT: NewProductDraft = {
   image: "",
   price: "",
   cost: "",
-  stock: "",
-  stockMin: "",
 };
 
 const NAV_ITEMS: Array<{ value: View; label: string; icon: React.ReactNode }> = [
@@ -137,8 +139,6 @@ export default function POSPage() {
     cost: {},
     presentation: {},
     image: {},
-    stock: {},
-    stockMin: {},
   });
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
@@ -151,12 +151,17 @@ export default function POSPage() {
 
   const [voidingId, setVoidingId] = useState<number | null>(null);
   const [voidTarget, setVoidTarget] = useState<Sale | null>(null);
+  const [moveTarget, setMoveTarget] = useState<Sale | null>(null);
+  const [movingId, setMovingId] = useState<number | null>(null);
 
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
 
   const requestIdRef = useRef(newRequestId());
   const lastSigRef = useRef("");
+  const lastRefreshRef = useRef(0);
+  const busyRef = useRef(false);
+  const notifiedConflicts = useRef(new Set<number>());
 
   const isAdmin = role === "admin";
   const canEdit = role === null || isAdmin;
@@ -164,8 +169,8 @@ export default function POSPage() {
 
   /* ----------------------------- carga de datos ---------------------------- */
 
-  const loadProducts = useCallback(async () => {
-    setProductsLoading(true);
+  const loadProducts = useCallback(async (silent = false) => {
+    if (!silent) setProductsLoading(true);
     setProductsError(null);
     try {
       const res = await fetch("/api/products", { cache: "no-store" });
@@ -185,8 +190,6 @@ export default function POSPage() {
           cost: (p) => (p.costCents === null ? "" : (p.costCents / 100).toFixed(2)),
           presentation: (p) => p.presentation ?? "",
           image: (p) => p.imageUrl ?? "",
-          stock: (p) => (p.stock === null ? "" : String(p.stock)),
-          stockMin: (p) => (p.stockMin === null ? "" : String(p.stockMin)),
         };
         for (const field of Object.keys(seed) as DraftField[]) {
           const copy = { ...next[field] };
@@ -203,13 +206,13 @@ export default function POSPage() {
       );
       setConnected(false);
     } finally {
-      setProductsLoading(false);
+      if (!silent) setProductsLoading(false);
     }
   }, []);
 
   const loadSales = useCallback(
-    async (filter?: { from?: string; to?: string }) => {
-      setSalesLoading(true);
+    async (filter?: { from?: string; to?: string }, silent = false) => {
+      if (!silent) setSalesLoading(true);
       setSalesError(null);
       try {
         const params = new URLSearchParams();
@@ -232,7 +235,7 @@ export default function POSPage() {
           error instanceof Error ? error.message : "No se pudo cargar el historial.",
         );
       } finally {
-        setSalesLoading(false);
+        if (!silent) setSalesLoading(false);
       }
     },
     [isAdmin],
@@ -294,6 +297,37 @@ export default function POSPage() {
   // El carrito vive en localStorage (useSyncExternalStore), así que no
   // necesita efectos para restaurarse ni para persistirse.
 
+  /* --------------------------- refresco automático ------------------------- */
+
+  // El POS suele quedar abierto en un celular con la pantalla apagada mientras
+  // otra persona cobra. Refrescamos al volver a la pestaña y cada POLL_MS, en
+  // silencio para que no parpadee el "cargando".
+  const refreshAll = useCallback(async () => {
+    if (busyRef.current) return;
+    const now = Date.now();
+    // visibilitychange y focus se disparan juntos: evita el doble fetch.
+    if (now - lastRefreshRef.current < 5_000) return;
+    lastRefreshRef.current = now;
+    await Promise.all([loadProducts(true), loadSales(undefined, true)]);
+    void loadCash();
+  }, [loadProducts, loadSales, loadCash]);
+
+  useEffect(() => {
+    const onWake = () => {
+      if (document.visibilityState === "visible") void refreshAll();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("focus", onWake);
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void refreshAll();
+    }, POLL_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("focus", onWake);
+      clearInterval(timer);
+    };
+  }, [refreshAll]);
+
   /* ------------------------------- derivados ------------------------------- */
 
   const categories = useMemo(() => {
@@ -322,6 +356,27 @@ export default function POSPage() {
     () => cartEntries.reduce((sum, e) => sum + e.qty, 0),
     [cartEntries],
   );
+  // Si otra persona vendió lo que ya tienes en el carrito, te avisamos en vez
+  // de que te lo descubras al cobrar.
+  useEffect(() => {
+    const conflicts = cartEntries.filter(
+      (line) => line.product.stock !== null && line.qty > line.product.stock,
+    );
+    for (const line of conflicts) {
+      if (notifiedConflicts.current.has(line.product.id)) continue;
+      notifiedConflicts.current.add(line.product.id);
+      notify(
+        `Quedan ${line.product.stock} de ${line.product.name}, pero tienes ${line.qty} en la venta.`,
+        "error",
+      );
+    }
+    for (const id of Array.from(notifiedConflicts.current)) {
+      if (!conflicts.some((line) => line.product.id === id)) {
+        notifiedConflicts.current.delete(id);
+      }
+    }
+  }, [cartEntries, notify]);
+
   const cartSig = useMemo(
     () =>
       JSON.stringify(
@@ -393,6 +448,7 @@ export default function POSPage() {
       lastSigRef.current = cartSig;
     }
     setSubmitting(true);
+    busyRef.current = true;
     setCheckoutError(null);
     try {
       const res = await fetch("/api/sales", {
@@ -431,6 +487,7 @@ export default function POSPage() {
       );
     } finally {
       setSubmitting(false);
+      busyRef.current = false;
     }
   }
 
@@ -448,22 +505,13 @@ export default function POSPage() {
     const costRaw = get("cost");
     const presRaw = get("presentation");
     const imgRaw = get("image");
-    const stockRaw = get("stock");
-    const minRaw = get("stockMin");
 
     const fail = (message: string) => {
       setRowErrors((prev) => ({ ...prev, [id]: message }));
     };
 
-    if (
-      priceRaw === "" &&
-      costRaw === "" &&
-      presRaw === "" &&
-      imgRaw === "" &&
-      stockRaw === "" &&
-      minRaw === ""
-    ) {
-      fail("Ingresa al menos foto, presentación, costo, precio o stock.");
+    if (priceRaw === "" && costRaw === "" && presRaw === "" && imgRaw === "") {
+      fail("Ingresa al menos foto, presentación, costo o precio.");
       return;
     }
     const price = priceRaw === "" ? undefined : parseSolesToCents(priceRaw);
@@ -483,22 +531,6 @@ export default function POSPage() {
       fail("La foto debe ser una URL válida (http:// o https://).");
       return;
     }
-    const stock: number | null | undefined = stockRaw === "" ? null : parseCount(stockRaw);
-    if (stockRaw !== "" && stock === null) {
-      fail("El stock debe ser un número entero (0 o mayor).");
-      return;
-    }
-    const stockMin: number | null | undefined =
-      minRaw === "" ? null : parseCount(minRaw);
-    if (minRaw !== "" && stockMin === null) {
-      fail("El stock mínimo debe ser un número entero (0 o mayor).");
-      return;
-    }
-    if (stockMin !== null && stockMin !== undefined && stock === null) {
-      fail("Ponle un stock al producto para poder avisarte del mínimo.");
-      return;
-    }
-
     setSavingId(id);
     setRowErrors((prev) => {
       const copy = { ...prev };
@@ -510,8 +542,6 @@ export default function POSPage() {
         id,
         presentation: presRaw === "" ? null : presRaw,
         imageUrl: imgRaw === "" ? null : imgRaw,
-        stock,
-        stockMin,
       };
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
@@ -637,25 +667,6 @@ export default function POSPage() {
       setAddError("La foto debe ser una URL válida (http:// o https://).");
       return;
     }
-    const stock =
-      newProduct.stock.trim() === "" ? null : parseCount(newProduct.stock.trim());
-    if (newProduct.stock.trim() !== "" && stock === null) {
-      setAddError("El stock debe ser un número entero (0 o mayor).");
-      return;
-    }
-    const stockMin =
-      newProduct.stockMin.trim() === ""
-        ? null
-        : parseCount(newProduct.stockMin.trim());
-    if (newProduct.stockMin.trim() !== "" && stockMin === null) {
-      setAddError("El stock mínimo debe ser un número entero (0 o mayor).");
-      return;
-    }
-    if (stockMin !== null && stock === null) {
-      setAddError("Ponle un stock al producto para poder avisarte del mínimo.");
-      return;
-    }
-
     setSavingNew(true);
     setAddError(null);
     try {
@@ -664,8 +675,6 @@ export default function POSPage() {
       if (img !== "") body.imageUrl = img;
       if (price !== undefined) body.priceCents = price;
       if (cost !== undefined) body.costCents = cost;
-      if (stock !== null) body.stock = stock;
-      if (stockMin !== null) body.stockMin = stockMin;
       const res = await fetch("/api/products", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -712,6 +721,42 @@ export default function POSPage() {
     }
   }
 
+  async function moveSaleDate(sale: Sale, date: string, reason: string) {
+    setMovingId(sale.id);
+    try {
+      const res = await fetch(`/api/sales/${sale.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, reason }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const data = (await res.json()) as Sale[];
+      // Si había un filtro de fechas activo, la venta pudo salir de la lista.
+      if (fromDate || toDate) {
+        const from = fromDate ? startOfDayIso(fromDate) : undefined;
+        const to = toDate ? endOfDayIso(toDate) : undefined;
+        const visible = data.filter((s) => {
+          if (from && s.effectiveDate < from) return false;
+          if (to && s.effectiveDate > to) return false;
+          return true;
+        });
+        setSales(visible);
+      } else {
+        setSales(data);
+      }
+      setMoveTarget(null);
+      notify(`Venta #${sale.id} ahora cuenta para el ${date}.`, "success");
+      void loadAdmin();
+    } catch (error) {
+      notify(
+        error instanceof Error ? error.message : "No se pudo cambiar la fecha.",
+        "error",
+      );
+    } finally {
+      setMovingId(null);
+    }
+  }
+
   function downloadReport() {
     const params = new URLSearchParams();
     if (fromDate) params.set("from", startOfDayIso(fromDate));
@@ -748,6 +793,37 @@ export default function POSPage() {
     setCashSessions((await res.json()) as CashSession[]);
     notify("Caja cerrada. Revisa el arqueo en el historial.", "success");
     void loadAdmin();
+  }
+
+  /* ------------------------------- recepción -------------------------------- */
+
+  async function receiveOrder(
+    lines: Array<{
+      productId: number;
+      boxes: number | null;
+      unitsPerBox: number | null;
+      looseUnits: number | null;
+    }>,
+    note: string,
+  ): Promise<number> {
+    const res = await fetch("/api/products", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lines, note }),
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    const data = (await res.json()) as {
+      applied: ReceiptResult[];
+      products: Product[];
+    };
+    setProducts(data.products);
+    const total = data.applied.reduce((sum, r) => sum + r.delta, 0);
+    notify(
+      `Recibido: ${data.applied.length} ${data.applied.length === 1 ? "producto" : "productos"}, +${total} botellas.`,
+      "success",
+    );
+    void loadAdmin();
+    return total;
   }
 
   /* --------------------------------- admin --------------------------------- */
@@ -805,6 +881,9 @@ export default function POSPage() {
   function goTo(next: View) {
     if (!visibleViews.includes(next)) return;
     setViewState(next);
+    // Los datos pueden venir viejos de otro dispositivo: al cambiar de vista
+    // siempre se recargan (en silencio).
+    void refreshAll();
     if (next === "caja") void loadCash();
     if (next === "admin" && isAdmin) void loadAdmin();
   }
@@ -854,6 +933,9 @@ export default function POSPage() {
                 <Wifi className="h-3.5 w-3.5" />
               )}
               {connected === false ? "Sin conexión" : "En línea"}
+              <span className="hidden font-normal opacity-70 sm:inline">
+                · se actualiza solo
+              </span>
             </span>
             <span className="rounded-full bg-stone-100 px-3 py-1.5 font-semibold text-stone-700">
               {activeCount} productos · {pricedCount} con precio
@@ -972,8 +1054,6 @@ export default function POSPage() {
               costDrafts={drafts.cost}
               presentationDrafts={drafts.presentation}
               imageDrafts={drafts.image}
-              stockDrafts={drafts.stock}
-              stockMinDrafts={drafts.stockMin}
               onDraft={onDraft}
               onSave={saveProduct}
               onToggleActive={toggleActive}
@@ -991,17 +1071,31 @@ export default function POSPage() {
               products={products}
               movements={stockMovements}
               canEdit={canEdit}
-              onSaveStock={async (id, stock) => {
+              onEnableControl={async (id) => {
                 const res = await fetch("/api/products", {
                   method: "PATCH",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ id, stock }),
+                  body: JSON.stringify({ id, stock: 0 }),
+                });
+                if (!res.ok) {
+                  notify(await readError(res), "error");
+                  return;
+                }
+                setProducts((await res.json()) as Product[]);
+                notify("Control de stock activado. Ya puedes recibir pedidos.", "success");
+              }}
+              onSaveStock={async (id, patch) => {
+                const res = await fetch("/api/products", {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ id, ...patch }),
                 });
                 if (!res.ok) throw new Error(await readError(res));
                 setProducts((await res.json()) as Product[]);
                 notify("Stock actualizado.", "success");
                 void loadAdmin();
               }}
+              onReceive={receiveOrder}
               onExport={() => {
                 void fetch("/api/reports", { method: "POST" })
                   .then(async (res) => {
@@ -1052,6 +1146,7 @@ export default function POSPage() {
               }}
               onRetry={() => void loadSales()}
               onVoid={(sale) => setVoidTarget(sale)}
+              onMoveDate={(sale) => setMoveTarget(sale)}
               onOpenTicket={(sale) => setTicket(sale)}
               voidingId={voidingId}
               onDownloadReport={downloadReport}
@@ -1165,6 +1260,15 @@ export default function POSPage() {
         showProfit={showProfit}
         onClose={() => setTicket(null)}
         onPrint={() => window.print()}
+      />
+
+      <MoveDateDialog
+        sale={moveTarget}
+        busy={movingId !== null}
+        onClose={() => setMoveTarget(null)}
+        onConfirm={(date, reason) => {
+          if (moveTarget) void moveSaleDate(moveTarget, date, reason);
+        }}
       />
 
       <VoidDialog

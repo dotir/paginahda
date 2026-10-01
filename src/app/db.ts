@@ -16,6 +16,10 @@ export type Product = {
   /** null = sin control de stock (se vende sin límite). */
   stock: number | null;
   stockMin: number | null;
+  /** Botellas por caja. null = este producto no se maneja por cajas. */
+  unitsPerBox: number | null;
+  /** Costo del empaque/canasta, por caja. Solo informational. */
+  boxCostCents: number | null;
 };
 
 export type SaleItem = {
@@ -39,7 +43,16 @@ export type SalePayment = {
 
 export type Sale = {
   id: number;
+  /** Momento real en que se registró. Nunca se modifica. */
   createdAt: string;
+  /**
+   * Día con el que cuenta la venta (totales y reportes). Empieza siendo el
+   * día local de createdAt y solo cambia si alguien la mueve a otro día.
+   */
+  effectiveDate: string;
+  dateMovedAt: string | null;
+  dateMovedBy: string | null;
+  dateMoveReason: string | null;
   totalCents: number;
   /** "mixto" cuando la venta combinó varios medios de pago. */
   paymentMethod: string;
@@ -155,6 +168,44 @@ function getClient(): Client {
   return client;
 }
 
+/**
+ * Ancla de un día local como ISO a las 12:00 UTC. Así el día elegido se
+ * muestra igual en cualquier huso horario (Perú es UTC-5) y los rangos
+ * [inicio del día, fin del día] comparan bien como strings.
+ */
+export function dayAnchor(date: Date): string {
+  return new Date(
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0),
+  ).toISOString();
+}
+
+/** Convierte "2026-09-30" (input date) en el ancla de ese día. */
+export function dayAnchorFromInput(value: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const [, y, m, d] = match;
+  const date = new Date(Number(y), Number(m) - 1, Number(d));
+  if (Number.isNaN(date.getTime())) return null;
+  if (date.getMonth() !== Number(m) - 1 || date.getDate() !== Number(d)) return null;
+  return dayAnchor(date);
+}
+
+async function backfillSaleDates(client: Client): Promise<void> {
+  const pending = await client.execute(
+    "SELECT id, created_at FROM sales WHERE effective_date IS NULL",
+  );
+  for (const row of pending.rows) {
+    const created = new Date(String(row.created_at));
+    const anchor = Number.isNaN(created.getTime())
+      ? String(row.created_at)
+      : dayAnchor(created);
+    await client.execute({
+      sql: "UPDATE sales SET effective_date = ? WHERE id = ?",
+      args: [anchor, num(row.id)],
+    });
+  }
+}
+
 async function seedAdminUser(client: Client): Promise<void> {
   const password = process.env.POS_PASSWORD;
   if (!password) return;
@@ -188,7 +239,9 @@ function ensureSchema(): Promise<void> {
             cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents > 0),
             active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
             stock INTEGER CHECK (stock IS NULL OR stock >= 0),
-            stock_min INTEGER CHECK (stock_min IS NULL OR stock_min >= 0)
+            stock_min INTEGER CHECK (stock_min IS NULL OR stock_min >= 0),
+            units_per_box INTEGER CHECK (units_per_box IS NULL OR units_per_box > 0),
+            box_cost_cents INTEGER CHECK (box_cost_cents IS NULL OR box_cost_cents > 0)
           )`,
           `CREATE TABLE IF NOT EXISTS cash_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,6 +282,15 @@ function ensureSchema(): Promise<void> {
             received_cents INTEGER,
             change_cents INTEGER,
             reference TEXT
+          )`,
+          `CREATE TABLE IF NOT EXISTS sale_date_moves (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER NOT NULL,
+            from_date TEXT NOT NULL,
+            to_date TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            user TEXT,
+            at TEXT NOT NULL
           )`,
           `CREATE TABLE IF NOT EXISTS stock_movements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -271,12 +333,18 @@ function ensureSchema(): Promise<void> {
         "ALTER TABLE products ADD COLUMN image_url TEXT",
         "ALTER TABLE products ADD COLUMN stock INTEGER CHECK (stock IS NULL OR stock >= 0)",
         "ALTER TABLE products ADD COLUMN stock_min INTEGER CHECK (stock_min IS NULL OR stock_min >= 0)",
+        "ALTER TABLE products ADD COLUMN units_per_box INTEGER CHECK (units_per_box IS NULL OR units_per_box > 0)",
+        "ALTER TABLE products ADD COLUMN box_cost_cents INTEGER CHECK (box_cost_cents IS NULL OR box_cost_cents > 0)",
         "ALTER TABLE sale_items ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0)",
         "ALTER TABLE sales ADD COLUMN user TEXT",
         "ALTER TABLE sales ADD COLUMN voided_at TEXT",
         "ALTER TABLE sales ADD COLUMN void_reason TEXT",
         "ALTER TABLE sales ADD COLUMN voided_by TEXT",
         "ALTER TABLE sales ADD COLUMN cash_session_id INTEGER REFERENCES cash_sessions(id)",
+        "ALTER TABLE sales ADD COLUMN effective_date TEXT",
+        "ALTER TABLE sales ADD COLUMN date_moved_at TEXT",
+        "ALTER TABLE sales ADD COLUMN date_moved_by TEXT",
+        "ALTER TABLE sales ADD COLUMN date_move_reason TEXT",
       ]) {
         try {
           await client.execute(sql);
@@ -284,6 +352,7 @@ function ensureSchema(): Promise<void> {
           if (!/duplicate column name/i.test(String(error))) throw error;
         }
       }
+      await backfillSaleDates(client);
       await seedAdminUser(client);
     })();
     globalClient.posSchemaReady = ready.catch((error) => {
@@ -321,6 +390,8 @@ function toProduct(row: Row): Product {
     active: num(row.active),
     stock: nullableNum(row.stock),
     stockMin: nullableNum(row.stockMin),
+    unitsPerBox: nullableNum(row.unitsPerBox),
+    boxCostCents: nullableNum(row.boxCostCents),
   };
 }
 
@@ -328,6 +399,10 @@ type SaleRow = {
   id: number;
   request_id: string;
   created_at: string;
+  effective_date: string | null;
+  date_moved_at: string | null;
+  date_moved_by: string | null;
+  date_move_reason: string | null;
   total_cents: number;
   payment_method: string;
   received_cents: number | null;
@@ -351,11 +426,22 @@ type SaleItemRow = {
   total_cents: number;
 };
 
+function nullableText(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
 function toSaleRow(row: Row): SaleRow {
   return {
     id: num(row.id),
     request_id: String(row.request_id),
     created_at: String(row.created_at),
+    effective_date:
+      row.effective_date === null || row.effective_date === undefined
+        ? String(row.created_at)
+        : String(row.effective_date),
+    date_moved_at: nullableText(row.date_moved_at),
+    date_moved_by: nullableText(row.date_moved_by),
+    date_move_reason: nullableText(row.date_move_reason),
     total_cents: num(row.total_cents),
     payment_method: String(row.payment_method),
     received_cents: nullableNum(row.received_cents),
@@ -412,6 +498,10 @@ function assembleSale(
   return {
     id: row.id,
     createdAt: row.created_at,
+    effectiveDate: row.effective_date ?? row.created_at,
+    dateMovedAt: row.date_moved_at,
+    dateMovedBy: row.date_moved_by,
+    dateMoveReason: row.date_move_reason,
     totalCents: row.total_cents,
     paymentMethod: payments.length > 0 ? paymentMethod : row.payment_method,
     receivedCents: cashReceived ?? row.received_cents,
@@ -484,11 +574,11 @@ function saleWhere(filter: SaleFilter): { sql: string; args: Array<string | numb
   const clauses: string[] = [];
   const args: Array<string | number> = [];
   if (filter.from) {
-    clauses.push("created_at >= ?");
+    clauses.push("COALESCE(effective_date, created_at) >= ?");
     args.push(filter.from);
   }
   if (filter.to) {
-    clauses.push("created_at <= ?");
+    clauses.push("COALESCE(effective_date, created_at) <= ?");
     args.push(filter.to);
   }
   if (filter.user) {
@@ -550,7 +640,7 @@ async function attachSales(
 export async function getProducts(): Promise<Product[]> {
   await ensureSchema();
   const rs = await getClient().execute(
-    "SELECT id, name, category, presentation, image_url AS imageUrl, price_cents AS priceCents, cost_cents AS costCents, active, stock, stock_min AS stockMin FROM products ORDER BY active DESC, id ASC",
+    "SELECT id, name, category, presentation, image_url AS imageUrl, price_cents AS priceCents, cost_cents AS costCents, active, stock, stock_min AS stockMin, units_per_box AS unitsPerBox, box_cost_cents AS boxCostCents FROM products ORDER BY active DESC, id ASC",
   );
   return rs.rows.map(toProduct);
 }
@@ -572,6 +662,16 @@ function checkStock(value: number | null | undefined, label: string) {
   }
   if (value > 1_000_000) {
     throw new ValidationError(`${label} supera el máximo permitido.`);
+  }
+}
+
+function checkUnitsPerBox(value: number | null | undefined) {
+  if (value === undefined || value === null) return;
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ValidationError("Las botellas por caja deben ser mayores a 0.");
+  }
+  if (value > 1_000) {
+    throw new ValidationError("Las botellas por caja superan el máximo permitido.");
   }
 }
 
@@ -609,6 +709,8 @@ export async function createProduct(input: {
   costCents?: number | null;
   stock?: number | null;
   stockMin?: number | null;
+  unitsPerBox?: number | null;
+  boxCostCents?: number | null;
 }): Promise<Product[]> {
   const name = input.name.trim();
   const category = input.category.trim();
@@ -620,14 +722,16 @@ export async function createProduct(input: {
   }
   checkMoney("precio", input.priceCents);
   checkMoney("costo", input.costCents);
+  checkMoney("costo de la caja", input.boxCostCents);
   checkStock(input.stock, "El stock");
   checkStock(input.stockMin, "El stock mínimo");
+  checkUnitsPerBox(input.unitsPerBox);
   const presentation = checkPresentation(input.presentation);
   const imageUrl = checkImageUrl(input.imageUrl);
   await ensureSchema();
   try {
     await getClient().execute({
-      sql: "INSERT INTO products (name, category, presentation, image_url, price_cents, cost_cents, stock, stock_min) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      sql: "INSERT INTO products (name, category, presentation, image_url, price_cents, cost_cents, stock, stock_min, units_per_box, box_cost_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       args: [
         name,
         category,
@@ -637,6 +741,8 @@ export async function createProduct(input: {
         input.costCents ?? null,
         input.stock ?? null,
         input.stockMin ?? null,
+        input.unitsPerBox ?? null,
+        input.boxCostCents ?? null,
       ],
     });
   } catch (error) {
@@ -658,13 +764,24 @@ export async function updateProduct(
     imageUrl?: string | null;
     stock?: number | null;
     stockMin?: number | null;
+    unitsPerBox?: number | null;
+    boxCostCents?: number | null;
   },
 ): Promise<Product[]> {
   if (!Number.isInteger(id) || id <= 0) {
     throw new ValidationError("Producto inválido.");
   }
-  const { priceCents, costCents, active, presentation, imageUrl, stock, stockMin } =
-    patch;
+  const {
+    priceCents,
+    costCents,
+    active,
+    presentation,
+    imageUrl,
+    stock,
+    stockMin,
+    unitsPerBox,
+    boxCostCents,
+  } = patch;
   if (
     priceCents === undefined &&
     costCents === undefined &&
@@ -672,14 +789,18 @@ export async function updateProduct(
     presentation === undefined &&
     imageUrl === undefined &&
     stock === undefined &&
-    stockMin === undefined
+    stockMin === undefined &&
+    unitsPerBox === undefined &&
+    boxCostCents === undefined
   ) {
     throw new ValidationError("Nada que actualizar.");
   }
   checkMoney("precio", priceCents);
   checkMoney("costo", costCents);
+  checkMoney("costo de la caja", boxCostCents);
   checkStock(stock, "El stock");
   checkStock(stockMin, "El stock mínimo");
+  checkUnitsPerBox(unitsPerBox);
   const cleanPresentation = checkPresentation(presentation);
   const cleanImageUrl = checkImageUrl(imageUrl);
   await ensureSchema();
@@ -712,6 +833,14 @@ export async function updateProduct(
   if (stockMin !== undefined) {
     sets.push("stock_min = ?");
     args.push(stockMin);
+  }
+  if (unitsPerBox !== undefined) {
+    sets.push("units_per_box = ?");
+    args.push(unitsPerBox);
+  }
+  if (boxCostCents !== undefined) {
+    sets.push("box_cost_cents = ?");
+    args.push(boxCostCents);
   }
   args.push(id);
   const result = await getClient().execute({
@@ -773,7 +902,7 @@ export async function getSales(filter: SaleFilter = {}): Promise<Sale[]> {
   const client = getClient();
   const where = saleWhere(filter);
   const rs = await client.execute({
-    sql: `SELECT * FROM sales${where.sql} ORDER BY id DESC LIMIT 500`,
+    sql: `SELECT * FROM sales${where.sql} ORDER BY COALESCE(effective_date, created_at) DESC, id DESC LIMIT 500`,
     args: where.args,
   });
   return attachSales(client, rs.rows.map(toSaleRow));
@@ -785,7 +914,7 @@ export async function getSalesForReport(filter: SaleFilter = {}): Promise<Sale[]
   const client = getClient();
   const where = saleWhere(filter);
   const rs = await client.execute({
-    sql: `SELECT * FROM sales${where.sql} ORDER BY id ASC`,
+    sql: `SELECT * FROM sales${where.sql} ORDER BY COALESCE(effective_date, created_at) ASC, id ASC`,
     args: where.args,
   });
   return attachSales(client, rs.rows.map(toSaleRow));
@@ -872,6 +1001,266 @@ export async function voidSale(input: {
     throw error;
   }
   return getSales({ includeVoided: true });
+}
+
+/**
+ * Mueve una venta a otro día. Solo cambia el día con el que cuenta (totales y
+ * reportes): el momento real del registro y el turno de caja no se tocan, y
+ * queda registrado quién lo hizo, desde qué día y por qué.
+ */
+export async function moveSaleDate(input: {
+  id: number;
+  date: string;
+  reason: string;
+  user: string | null;
+}): Promise<Sale[]> {
+  const { id, reason, user } = input;
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new ValidationError("Venta inválida.");
+  }
+  const reasonClean = reason.trim();
+  if (reasonClean.length < 5) {
+    throw new ValidationError("Escribe el motivo del cambio de fecha (mínimo 5 caracteres).");
+  }
+  if (reasonClean.length > 200) {
+    throw new ValidationError("El motivo es demasiado largo (máximo 200 caracteres).");
+  }
+  const anchor = dayAnchorFromInput(input.date);
+  if (!anchor) {
+    throw new ValidationError("Elige una fecha válida.");
+  }
+  const today = dayAnchor(new Date());
+  if (anchor > today) {
+    throw new ValidationError("No se puede mover una venta a un día futuro.");
+  }
+  const earliest = dayAnchor(new Date(new Date().getFullYear() - 5, 0, 1));
+  if (anchor < earliest) {
+    throw new ValidationError("Esa fecha es demasiado antigua.");
+  }
+
+  await ensureSchema();
+  const tx = await getClient().transaction("write");
+  try {
+    const found = await tx.execute({
+      sql: "SELECT id, effective_date, created_at, voided_at FROM sales WHERE id = ?",
+      args: [id],
+    });
+    if (found.rows.length === 0) {
+      throw new ValidationError("Venta no encontrada.");
+    }
+    if (found.rows[0].voided_at) {
+      throw new ValidationError("No se puede cambiar la fecha de una venta anulada.");
+    }
+    const fromDate = String(found.rows[0].effective_date ?? found.rows[0].created_at);
+    if (fromDate === anchor) {
+      throw new ValidationError("Esa venta ya cuenta para ese día.");
+    }
+    const now = new Date().toISOString();
+    await tx.execute({
+      sql: "UPDATE sales SET effective_date = ?, date_moved_at = ?, date_moved_by = ?, date_move_reason = ? WHERE id = ?",
+      args: [anchor, now, user, reasonClean, id],
+    });
+    await tx.execute({
+      sql: "INSERT INTO sale_date_moves (sale_id, from_date, to_date, reason, user, at) VALUES (?, ?, ?, ?, ?, ?)",
+      args: [id, fromDate, anchor, reasonClean, user, now],
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_log (at, user, action, detail) VALUES (?, ?, ?, ?)",
+      args: [
+        now,
+        user,
+        "venta.fecha_cambiada",
+        `Venta #${id} del ${fromDate.slice(0, 10)} al ${anchor.slice(0, 10)}: ${reasonClean}`,
+      ],
+    });
+    await tx.commit();
+  } catch (error) {
+    try {
+      await tx.rollback();
+    } catch {
+      // la transacción ya terminó
+    }
+    throw error;
+  }
+  return getSales({ includeVoided: true });
+}
+
+export type ReceiptLine = {
+  productId: number;
+  /** Cajas recibidas en esta línea (pueden ser 0 si son unidades sueltas). */
+  boxes: number | null;
+  /** Botellas por caja de ESTA recepción (puede venir incompleta). */
+  unitsPerBox: number | null;
+  /** Botellas sueltas, para lo que no viene en caja. */
+  looseUnits: number | null;
+};
+
+export type ReceiptResult = {
+  line: number;
+  productId: number;
+  name: string;
+  boxes: number;
+  unitsPerBox: number;
+  delta: number;
+  stockBefore: number | null;
+  stockAfter: number | null;
+  note: string;
+};
+
+/**
+ * Registra la recepción de un pedido. Las líneas pueden venir en cajas
+ * (cajas × botellas por caja) o en unidades sueltas, y ambos a la vez.
+ * El servidor calcula el total: la UI solo sugiere.
+ */
+export async function receiveStock(input: {
+  lines: ReceiptLine[];
+  user: string | null;
+  note?: string | null;
+}): Promise<{ applied: ReceiptResult[]; products: Product[] }> {
+  const { lines, user } = input;
+  if (!Array.isArray(lines) || lines.length === 0) {
+    throw new ValidationError("Agrega al menos un producto al pedido.");
+  }
+  if (lines.length > 100) {
+    throw new ValidationError("Máximo 100 líneas por recepción.");
+  }
+  const note = (input.note ?? "").trim();
+  if (note.length > 100) {
+    throw new ValidationError("La nota del pedido es demasiado larga (máximo 100).");
+  }
+  for (const line of lines) {
+    if (!line || !Number.isInteger(line.productId) || line.productId <= 0) {
+      throw new ValidationError("Hay una línea con producto inválido.");
+    }
+  }
+
+  await ensureSchema();
+  const tx = await getClient().transaction("write");
+  const applied: ReceiptResult[] = [];
+  try {
+    for (const line of lines) {
+      const found = await tx.execute({
+        sql: "SELECT id, name, stock, units_per_box AS unitsPerBox FROM products WHERE id = ?",
+        args: [line.productId],
+      });
+      if (found.rows.length === 0) {
+        throw new ValidationError(
+          `Producto #${line.productId} no encontrado.`,
+        );
+      }
+      const name = String(found.rows[0].name);
+      const stockBefore = nullableNum(found.rows[0].stock);
+      if (stockBefore === null) {
+        throw new ValidationError(
+          `Activa el control de stock de "${name}" antes de recibirlo.`,
+        );
+      }
+      const defaultPerBox = nullableNum(found.rows[0].unitsPerBox);
+
+      const boxes = line.boxes ?? 0;
+      const loose = line.looseUnits ?? 0;
+      for (const [label, value] of [
+        ["cajas", boxes],
+        ["botellas sueltas", loose],
+      ] as const) {
+        if (!Number.isInteger(value) || value < 0) {
+          throw new ValidationError(`En "${name}": ${label} debe ser 0 o mayor.`);
+        }
+        if (value > 10_000) {
+          throw new ValidationError(`En "${name}": ${label} es demasiado grande.`);
+        }
+      }
+      // Si no se indica por caja en esta línea, se usa el del producto.
+      const perBox =
+        line.unitsPerBox === null || line.unitsPerBox === undefined
+          ? defaultPerBox
+          : line.unitsPerBox;
+      if (boxes > 0) {
+        if (perBox === null) {
+          throw new ValidationError(
+            `En "${name}": indica cuántas botellas trae cada caja.`,
+          );
+        }
+        if (!Number.isInteger(perBox) || perBox <= 0) {
+          throw new ValidationError(
+            `En "${name}": las botellas por caja deben ser mayores a 0.`,
+          );
+        }
+        if (perBox > 1_000) {
+          throw new ValidationError(
+            `En "${name}": las botellas por caja son demasiadas.`,
+          );
+        }
+      }
+      const delta = boxes * (perBox ?? 0) + loose;
+      if (delta === 0) continue;
+
+      const updated = await tx.execute({
+        sql: "UPDATE products SET stock = stock + ? WHERE id = ?",
+        args: [delta, line.productId],
+      });
+      if (updated.rowsAffected === 0) {
+        throw new ValidationError(`No se pudo actualizar el stock de "${name}".`);
+      }
+      const notes: string[] = [];
+      if (boxes > 0) {
+        notes.push(
+          `Recepción de pedido: ${boxes} ${boxes === 1 ? "caja" : "cajas"} de ${perBox} botellas${note ? ` · ${note}` : ""}`,
+        );
+      } else {
+        notes.push(`Recepción de pedido: ${loose} botellas${note ? ` · ${note}` : ""}`);
+      }
+      // Una caja vino con menos botellas de lo habitual: queda como nuevo
+      // predeterminado para la próxima recepción.
+      if (boxes > 0 && perBox !== null && perBox !== defaultPerBox) {
+        await tx.execute({
+          sql: "UPDATE products SET units_per_box = ? WHERE id = ?",
+          args: [perBox, line.productId],
+        });
+        notes.push(`caja ahora de ${perBox}`);
+      }
+      await recordStockMovement(tx, {
+        productId: line.productId,
+        delta,
+        reason: notes.join(" · "),
+        user,
+      });
+      applied.push({
+        line: applied.length,
+        productId: line.productId,
+        name,
+        boxes,
+        unitsPerBox: perBox ?? 0,
+        delta,
+        stockBefore,
+        stockAfter: stockBefore + delta,
+        note: note || (delta > 0 ? `${delta} botellas` : `${delta}`),
+      });
+    }
+    if (applied.length === 0) {
+      throw new ValidationError("No hay cantidades que ingresar.");
+    }
+    await tx.execute({
+      sql: "INSERT INTO audit_log (at, user, action, detail) VALUES (?, ?, ?, ?)",
+      args: [
+        new Date().toISOString(),
+        user,
+        "stock.recibido",
+        applied
+          .map((r) => `${r.name}: +${r.delta} (${r.note})`)
+          .join("; "),
+      ],
+    });
+    await tx.commit();
+  } catch (error) {
+    try {
+      await tx.rollback();
+    } catch {
+      // la transacción ya terminó
+    }
+    throw error;
+  }
+  return { applied, products: await getProducts() };
 }
 
 export async function getStockMovements(limit = 100): Promise<StockMovement[]> {
@@ -1081,10 +1470,11 @@ export async function createSale(input: {
 
     const createdAt = new Date().toISOString();
     const inserted = await tx.execute({
-      sql: "INSERT INTO sales (request_id, created_at, total_cents, payment_method, received_cents, change_cents, user, cash_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      sql: "INSERT INTO sales (request_id, created_at, effective_date, total_cents, payment_method, received_cents, change_cents, user, cash_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       args: [
         requestId,
         createdAt,
+        dayAnchor(new Date(createdAt)),
         total,
         paymentMethod,
         cashReceived,

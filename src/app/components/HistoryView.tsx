@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import {
   Ban,
+  CalendarClock,
   CalendarRange,
   Download,
   Eye,
@@ -13,7 +14,7 @@ import {
 import { PaymentIcon } from "@/app/components/PaymentIcon";
 import {
   displayName,
-  formatDate,
+  formatDay,
   formatPEN,
   paymentLabel,
   saleProfit,
@@ -34,6 +35,7 @@ type Props = {
   onClearFilter: () => void;
   onRetry: () => void;
   onVoid: (sale: Sale) => void;
+  onMoveDate: (sale: Sale) => void;
   onOpenTicket: (sale: Sale) => void;
   voidingId: number | null;
   onDownloadReport: () => void;
@@ -54,6 +56,7 @@ export default function HistoryView({
   onClearFilter,
   onRetry,
   onVoid,
+  onMoveDate,
   onOpenTicket,
   voidingId,
   onDownloadReport,
@@ -226,7 +229,21 @@ export default function HistoryView({
                     #{sale.id}
                   </span>
                   <span className="text-xs text-stone-500">
-                    {formatDate(sale.createdAt)}
+                    {formatDay(sale.effectiveDate)}
+                    <span className="ml-1">
+                      {new Date(sale.effectiveDate).toLocaleTimeString("es-PE", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                    {sale.dateMovedAt && (
+                      <span
+                        className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 font-bold text-amber-800"
+                        title={`Movida por ${sale.dateMovedBy ?? "—"}: ${sale.dateMoveReason ?? ""}`}
+                      >
+                        movida de día
+                      </span>
+                    )}
                   </span>
                   <span className="flex items-center gap-1 rounded-full bg-stone-100 px-2.5 py-1 text-[11px] font-bold text-stone-700">
                     {sale.payments.length > 0 && (
@@ -327,6 +344,16 @@ export default function HistoryView({
                     >
                       <Eye className="h-3.5 w-3.5" />
                       Detalle
+                    </button>
+                  )}
+                  {!sale.voided && canVoid && (
+                    <button
+                      type="button"
+                      onClick={() => onMoveDate(sale)}
+                      className="flex items-center gap-1.5 rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-bold text-stone-700 transition hover:border-red-900 hover:text-red-900"
+                    >
+                      <CalendarClock className="h-3.5 w-3.5" />
+                      Mover de día
                     </button>
                   )}
                   {!sale.voided && canVoid && (

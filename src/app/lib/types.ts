@@ -11,6 +11,10 @@ export type Product = {
   active: number;
   stock: number | null;
   stockMin: number | null;
+  /** Botellas por caja. null = el producto no se maneja por cajas. */
+  unitsPerBox: number | null;
+  /** Costo del empaque/canasta, por caja. */
+  boxCostCents: number | null;
 };
 
 export type SaleItem = {
@@ -45,6 +49,11 @@ export type SalePayment = {
 export type Sale = {
   id: number;
   createdAt: string;
+  /** Día con el que cuenta la venta (totales y reportes). */
+  effectiveDate: string;
+  dateMovedAt: string | null;
+  dateMovedBy: string | null;
+  dateMoveReason: string | null;
   totalCents: number;
   paymentMethod: string;
   receivedCents: number | null;
@@ -80,6 +89,24 @@ export type PosUser = {
   role: Role;
   active: number;
   createdAt: string;
+};
+
+export type ReceiptLineDraft = {
+  boxes: string;
+  unitsPerBox: string;
+  looseUnits: string;
+};
+
+export type ReceiptResult = {
+  line: number;
+  productId: number;
+  name: string;
+  boxes: number;
+  unitsPerBox: number;
+  delta: number;
+  stockBefore: number | null;
+  stockAfter: number | null;
+  note: string;
 };
 
 export type StockMovement = {

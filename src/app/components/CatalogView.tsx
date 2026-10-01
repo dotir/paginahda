@@ -1,14 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  Eye,
-  EyeOff,
-  Plus,
-  Store,
-  Trash2,
-} from "lucide-react";
+import { useState } from "react";
+import { Eye, EyeOff, Plus, Store, Trash2 } from "lucide-react";
 import Modal from "@/app/components/Modal";
 import {
   displayName,
@@ -52,8 +45,6 @@ export type NewProductDraft = {
   image: string;
   price: string;
   cost: string;
-  stock: string;
-  stockMin: string;
 };
 
 type Props = {
@@ -72,8 +63,6 @@ type Props = {
   costDrafts: Drafts;
   presentationDrafts: Drafts;
   imageDrafts: Drafts;
-  stockDrafts: Drafts;
-  stockMinDrafts: Drafts;
   onDraft: (field: DraftField, id: number, value: string) => void;
   onSave: (id: number) => void;
   onToggleActive: (id: number, next: boolean) => void;
@@ -85,29 +74,21 @@ type Props = {
   categories: string[];
 };
 
-export type DraftField =
-  | "price"
-  | "cost"
-  | "presentation"
-  | "image"
-  | "stock"
-  | "stockMin";
+export type DraftField = "price" | "cost" | "presentation" | "image";
 
 const FIELD_LABELS: Record<DraftField, { label: string; placeholder: string; type: string }> =
   {
     presentation: {
-      label: "Presentación",
-      placeholder: "Presentación (ej. Descartable 1 L)",
+      label: "",
+      placeholder: "Presentación (ej. Botella 750 ml)",
       type: "text",
     },
-    image: { label: "Foto (URL https://…)", placeholder: "Foto (URL)", type: "url" },
-    stock: { label: "Stock", placeholder: "libre", type: "number" },
-    stockMin: { label: "Mínimo", placeholder: "—", type: "number" },
+    image: { label: "", placeholder: "Foto (URL https://…)", type: "url" },
     cost: { label: "Me cuesta S/", placeholder: "0.00", type: "number" },
     price: { label: "Lo vendo S/", placeholder: "0.00", type: "number" },
   };
 
-const NUMBER_FIELDS: DraftField[] = ["stock", "stockMin", "cost", "price"];
+const COUNT_FIELDS: DraftField[] = ["cost", "price"];
 
 function DraftInput({
   field,
@@ -124,17 +105,18 @@ function DraftInput({
   label: string;
   ariaLabel: string;
 }) {
-  const isNumber = NUMBER_FIELDS.includes(field);
+  const isCount = COUNT_FIELDS.includes(field);
+  const isIntegerField = false;
   return (
     <label className="relative">
       <span className="pointer-events-none absolute -top-2 left-3 rounded bg-white px-1 text-[10px] font-bold uppercase tracking-wide text-stone-400">
         {label}
       </span>
       <input
-        type={isNumber ? "number" : "text"}
-        min={isNumber ? "0" : undefined}
-        step={isNumber ? (field === "stock" || field === "stockMin" ? "1" : "0.01") : undefined}
-        inputMode={field === "stock" || field === "stockMin" ? "numeric" : isNumber ? "decimal" : undefined}
+        type={isCount ? "number" : "text"}
+        min={isCount ? "0" : undefined}
+        step={isCount ? (isIntegerField ? "1" : "0.01") : undefined}
+        inputMode={isIntegerField ? "numeric" : isCount ? "decimal" : undefined}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
@@ -166,8 +148,6 @@ export default function CatalogView(props: Props) {
     costDrafts,
     presentationDrafts,
     imageDrafts,
-    stockDrafts,
-    stockMinDrafts,
     onDraft,
     onSave,
     onToggleActive,
@@ -193,22 +173,12 @@ export default function CatalogView(props: Props) {
     }
   }
 
-  const lowStock = useMemo(
-    () =>
-      products.filter(
-        (p) => p.stock !== null && p.stockMin !== null && p.stock <= p.stockMin,
-      ),
-    [products],
-  );
-
   const draftsFor = (field: DraftField, id: number): string => {
     const map = {
       price: priceDrafts,
       cost: costDrafts,
       presentation: presentationDrafts,
       image: imageDrafts,
-      stock: stockDrafts,
-      stockMin: stockMinDrafts,
     }[field];
     return map[id] ?? "";
   };
@@ -221,17 +191,10 @@ export default function CatalogView(props: Props) {
           Catálogo, costos y precios
         </h2>
         <p className="mt-1 text-sm text-stone-500">
-          Anota a cuánto te cuesta cada producto y a cuánto lo vendes. Solo los
-          productos activos y con precio aparecen habilitados para la venta.
+          Anota a cuánto te cuesta cada producto y a cuánto lo vendes. El
+          stock y las cajas se administran en la pestaña <strong>Stock</strong>.
         </p>
-        {lowStock.length > 0 && canEdit && (
-          <p className="mt-3 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>
-              Stock bajo o agotado: {lowStock.map((p) => p.name).join(", ")}
-            </span>
-          </p>
-        )}
+
       </div>
 
       {!canEdit ? (
@@ -330,32 +293,6 @@ export default function CatalogView(props: Props) {
                 className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-bold text-stone-900 outline-none focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
               />
             </label>
-            <label className="flex flex-col gap-1 text-xs font-bold text-stone-500">
-              Stock (vacío = sin control)
-              <input
-                type="number"
-                min="0"
-                step="1"
-                inputMode="numeric"
-                value={newProduct.stock}
-                onChange={(e) => onNewProductChange("stock", e.target.value)}
-                placeholder="sin control"
-                className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-bold text-stone-900 outline-none focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-bold text-stone-500">
-              Avisar cuando quede (mínimo)
-              <input
-                type="number"
-                min="0"
-                step="1"
-                inputMode="numeric"
-                value={newProduct.stockMin}
-                onChange={(e) => onNewProductChange("stockMin", e.target.value)}
-                placeholder="3"
-                className="rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-bold text-stone-900 outline-none focus:border-red-900 focus:ring-2 focus:ring-red-900/20"
-              />
-            </label>
           </div>
           {newProductError && (
             <p
@@ -419,8 +356,6 @@ export default function CatalogView(props: Props) {
               draftPrice !== null && draftCost !== null
                 ? draftPrice - draftCost
                 : null;
-            const isLow =
-              p.stock !== null && p.stockMin !== null && p.stock <= p.stockMin;
             const busyRow = savingId === p.id || deletingId === p.id;
             return (
               <li
@@ -447,18 +382,9 @@ export default function CatalogView(props: Props) {
                           Desactivado
                         </span>
                       )}
-                      {p.stock !== null && (
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                            p.stock === 0
-                              ? "bg-red-100 text-red-800"
-                              : isLow
-                                ? "bg-amber-100 text-amber-800"
-                                : "bg-emerald-100 text-emerald-800"
-                          }`}
-                        >
-                          Stock {p.stock}
-                          {p.stockMin !== null ? ` / ${p.stockMin}` : ""}
+                      {p.stock !== null && p.stock === 0 && (
+                        <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold uppercase text-red-800">
+                          Agotado
                         </span>
                       )}
                     </div>
@@ -483,26 +409,7 @@ export default function CatalogView(props: Props) {
                       </div>
                     )}
                   </div>
-                  {canEdit && (
-                    <div className="grid grid-cols-2 gap-2 lg:w-56">
-                      <DraftInput
-                        field="stock"
-                        value={draftsFor("stock", p.id)}
-                        onChange={(v) => onDraft("stock", p.id, v)}
-                        onSave={() => onSave(p.id)}
-                        label="Stock"
-                        ariaLabel={`Stock de ${p.name}`}
-                      />
-                      <DraftInput
-                        field="stockMin"
-                        value={draftsFor("stockMin", p.id)}
-                        onChange={(v) => onDraft("stockMin", p.id, v)}
-                        onSave={() => onSave(p.id)}
-                        label="Mínimo"
-                        ariaLabel={`Stock mínimo de ${p.name}`}
-                      />
-                    </div>
-                  )}
+
                   {canEdit && (
                     <>
                       <div className="grid grid-cols-2 gap-2 lg:w-56">
